@@ -1,0 +1,128 @@
+{
+  "name": "co-weather-advisor",
+  "active": false,
+  "nodes": [
+    {
+      "name": "Input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "parameters": {},
+      "id": "c381cada-1abe-4bd9-9cb3-647ca87c3b8f",
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "name": "Extract Lat/Lng",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\nconst [lat, lng] = $json.location_coords.split(',').map(Number);\nreturn { json: { lat, lng, event_start: $json.event_start, event_end: $json.event_end } };\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "23af09e9-f2ea-4605-883a-f0fb4dbfe6df",
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "name": "Get Weather Forecast",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "https://api.openweathermap.org/data/3.0/onecall",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "lat",
+              "value": "{{ $json.lat }}"
+            },
+            {
+              "name": "lon",
+              "value": "{{ $json.lng }}"
+            },
+            {
+              "name": "exclude",
+              "value": "minutely,daily,alerts"
+            },
+            {
+              "name": "units",
+              "value": "metric"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "",
+          "name": "openweathermap-api"
+        }
+      },
+      "continueOnFail": true,
+      "id": "db360364-8b62-416e-b7c2-995c26741481",
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "name": "Analyze Weather + Build Advice",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\nconst weather = $json;\nconst eventStart = new Date($('Extract Lat/Lng').item.json.event_start);\nconst eventEnd = new Date($('Extract Lat/Lng').item.json.event_end);\n\n// Handle API error\nif (!weather.hourly || weather.error || weather.cod) {\n  return { json: {\n    error: true,\n    weather_worst: 'unavailable',\n    clothing_advice: 'Weather data unavailable — dress for current conditions',\n    dangerous_conditions: []\n  }};\n}\n\n// Filter hourly data to event window (including 1 hour before for commute)\nconst startUnix = Math.floor(eventStart.getTime() / 1000) - 3600; // 1 hour before\nconst endUnix = Math.floor(eventEnd.getTime() / 1000);\nconst relevant = weather.hourly.filter(h => h.dt >= startUnix && h.dt <= endUnix);\n\nif (relevant.length === 0) {\n  return { json: {\n    error: false,\n    weather_worst: 'no forecast data for this window',\n    clothing_advice: 'No weather data for event window',\n    dangerous_conditions: []\n  }};\n}\n\n// Find worst conditions\nconst minTemp = Math.min(...relevant.map(h => h.temp));\nconst maxTemp = Math.max(...relevant.map(h => h.temp));\nconst maxPrecip = Math.max(...relevant.map(h => (h.rain?.['1h'] || 0) + (h.snow?.['1h'] || 0)));\nconst maxWind = Math.max(...relevant.map(h => h.wind_speed));\nconst maxPop = Math.max(...relevant.map(h => h.pop || 0));\n\n// Weather descriptions\nconst descriptions = relevant.flatMap(h => h.weather.map(w => w.main));\nconst uniqueDescs = [...new Set(descriptions)];\nconst weatherWorst = uniqueDescs.join(', ') + ` (${Math.round(minTemp)}°-${Math.round(maxTemp)}°C)`;\n\n// Build clothing advice\nconst advice = [];\n\nif (maxTemp > 30) advice.push('Light, breathable clothing');\nelse if (maxTemp > 20) advice.push('Light layers');\nelse if (maxTemp > 10) advice.push('Jacket recommended');\nelse if (maxTemp > 0) advice.push('Warm coat, layers');\nelse advice.push('Heavy winter coat, warm layers');\n\nif (maxPop > 0.5 || maxPrecip > 0) advice.push('Bring umbrella');\nif (maxWind > 10) advice.push('Windbreaker recommended'); // 10 m/s ≈ 36 km/h\nif (minTemp < 5) advice.push('Gloves and scarf');\n\n// Check for extreme weather\nconst dangerous = [];\nif (minTemp >= 0 && minTemp <= 2 && maxPrecip > 0) dangerous.push('Ice risk — walk carefully');\nif (maxPrecip > 5 && minTemp < 1) dangerous.push('Heavy snow expected');\nif (maxWind > 19.4) dangerous.push('Extreme wind (>70 km/h) — consider postponing'); // 19.4 m/s\nif (maxTemp > 38) dangerous.push('Extreme heat — stay hydrated');\n\nreturn { json: {\n  error: false,\n  weather_worst: weatherWorst,\n  clothing_advice: advice.join('. '),\n  dangerous_conditions: dangerous,\n  min_temp: Math.round(minTemp),\n  max_temp: Math.round(maxTemp),\n  max_precip_mm: maxPrecip,\n  max_wind_ms: maxWind\n}};\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "f54429a0-7bad-41d1-8289-2a56d26984cc",
+      "position": [
+        910,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Input": {
+      "main": [
+        [
+          {
+            "node": "Extract Lat/Lng",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Lat/Lng": {
+      "main": [
+        [
+          {
+            "node": "Get Weather Forecast",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Weather Forecast": {
+      "main": [
+        [
+          {
+            "node": "Analyze Weather + Build Advice",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": ""
+  }
+}

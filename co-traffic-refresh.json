@@ -1,0 +1,348 @@
+{
+  "name": "co-traffic-refresh",
+  "active": false,
+  "nodes": [
+    {
+      "name": "Every 2 Hours 6AM-6PM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "mode": "custom",
+              "cronExpression": "0 6-18/2 * * *"
+            }
+          ]
+        }
+      },
+      "id": "cd9fd298-ab57-47b9-9910-0a372b52a895",
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "name": "Read Daily Plan",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "9ac2b7a2-ef1f-4359-82d4-5739b411e2d3",
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "name": "Filter Active Non-Online Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Only refresh traffic for events that are:\n// - not online (is_online !== true)\n// - not yet arrived/cancelled/skipped/expired\n// - planned for today\nconst today = $now.toFormat('yyyy-MM-dd');\nconst terminalStates = ['arrived', 'cancelled', 'skipped', 'expired'];\nconst items = $input.all();\n\nreturn items\n  .filter(i => {\n    const row = i.json;\n    return row.plan_date === today\n      && row.is_online !== 'TRUE' && row.is_online !== true\n      && !terminalStates.includes(row.current_state)\n      && row.location_coords;  // must have coordinates\n  })\n  .map(i => ({ json: i.json }));\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "391c14a7-0147-44cc-ad35-11c5970728f4",
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "name": "Loop Events",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "4e553b7f-428a-48ba-86ff-db118eb2bff4",
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "name": "Recalculate Departure",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "parameters": {
+        "source": "database",
+        "workflowId": "",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "da7d04f0-bb82-4bac-96e0-0eea8c11f184",
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "name": "Check If Changed >10 Min",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\nconst oldDep = new Date($('Loop Events').item.json.departure_time);\nconst newDep = new Date($json.departure_time);\nconst diffMin = Math.abs(newDep - oldDep) / (60 * 1000);\n\nreturn { json: {\n  event_id: $('Loop Events').item.json.event_id,\n  user_id: $('Loop Events').item.json.user_id,\n  title: $('Loop Events').item.json.title,\n  ntfy_topic: $('Loop Events').item.json.ntfy_topic,\n  traffic_updated_departure: $json.departure_time,\n  traffic_updated_commute_min: $json.commute_minutes,\n  changed_more_than_10: diffMin > 10,\n  diff_minutes: Math.round(diffMin)\n}};\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "0d79d1b4-aadb-4345-a46b-30cfcdf7059c",
+      "position": [
+        250,
+        520
+      ]
+    },
+    {
+      "name": "Update Traffic Columns",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "dataMode": "defineBelow",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [
+            "event_id"
+          ]
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "traffic_updated_departure",
+              "fieldValue": "{{ $json.traffic_updated_departure }}"
+            },
+            {
+              "column": "traffic_updated_commute_min",
+              "fieldValue": "{{ $json.traffic_updated_commute_min }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "e9542885-c76e-4e31-b6d5-ecdf26f0c099",
+      "position": [
+        470,
+        520
+      ]
+    },
+    {
+      "name": "Changed >10 Min?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json.changed_more_than_10 }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "22f142f8-64a9-47b4-8766-01552d980288",
+      "position": [
+        690,
+        520
+      ]
+    },
+    {
+      "name": "Send Traffic Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/{{ $(\"Loop Events\").item.json.ntfy_topic }}",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "X-Title",
+              "value": "Traffic Update"
+            },
+            {
+              "name": "X-Priority",
+              "value": "3"
+            },
+            {
+              "name": "X-Tags",
+              "value": "traffic"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyType": "raw",
+        "body": "Traffic changed for {{ $json.title }}: new departure {{ $json.traffic_updated_departure }} ({{ $json.diff_minutes }} min shift)"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ntfy-auth"
+        }
+      },
+      "id": "c96cbd0a-dd67-499e-88c3-44f1bf3049bb",
+      "position": [
+        910,
+        520
+      ]
+    }
+  ],
+  "connections": {
+    "Every 2 Hours 6AM-6PM": {
+      "main": [
+        [
+          {
+            "node": "Read Daily Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Daily Plan": {
+      "main": [
+        [
+          {
+            "node": "Filter Active Non-Online Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Active Non-Online Events": {
+      "main": [
+        [
+          {
+            "node": "Loop Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Events": {
+      "main": [
+        [
+          {
+            "node": "Recalculate Departure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recalculate Departure": {
+      "main": [
+        [
+          {
+            "node": "Check If Changed >10 Min",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Changed >10 Min": {
+      "main": [
+        [
+          {
+            "node": "Update Traffic Columns",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Traffic Columns": {
+      "main": [
+        [
+          {
+            "node": "Changed >10 Min?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Changed >10 Min?": {
+      "main": [
+        [
+          {
+            "node": "Send Traffic Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Traffic Alert": {
+      "main": [
+        [
+          {
+            "node": "Loop Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": ""
+  }
+}

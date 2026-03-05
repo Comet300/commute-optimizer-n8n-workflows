@@ -1,0 +1,262 @@
+{
+  "name": "co-error-handler",
+  "active": false,
+  "nodes": [
+    {
+      "name": "Catch Errors",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "parameters": {},
+      "id": "e0eb6b8a-d5c2-47f1-9b75-6beedbef1b69",
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "name": "Sanitize Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Sanitize the error message before logging or sending\nconst workflowName = $json.workflow?.name || 'unknown';\nconst errorMsg = ($json.execution?.error?.message || 'unknown error');\nconst executionId = $json.execution?.id || 'unknown';\n\n// Truncate to 200 characters\nlet sanitized = errorMsg.substring(0, 200);\n\n// Strip coordinate patterns (lat/lng in error messages)\nsanitized = sanitized.replace(/[-]?\\d{1,3}\\.\\d{4,}/g, '[REDACTED_COORD]');\n\n// Strip potential API keys (long hex strings)\nsanitized = sanitized.replace(/[a-fA-F0-9]{16,}/g, '[REDACTED_KEY]');\n\n// Strip shell metacharacters (defense in depth — even though the fallback logger\n// now uses fs.appendFileSync instead of Execute Command, sanitize anyway)\nsanitized = sanitized.replace(/[`$(){}|;&<>\\\\!]/g, '');\n\nreturn { json: {\n  timestamp: $now.toISO(),\n  workflow_name: workflowName,\n  error_message: sanitized,\n  execution_id: executionId,\n  resolved: ''  // empty = unresolved (per error_log schema; set to \"TRUE\" when manually resolved)\n}};\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "44b50929-1bf8-4422-ac9f-1eb2d3cb68dc",
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "name": "Log to Error Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "error_log"
+        },
+        "dataMode": "defineBelow",
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "timestamp",
+              "fieldValue": "{{ $(\"Sanitize Error\").item.json.timestamp }}"
+            },
+            {
+              "column": "workflow_name",
+              "fieldValue": "{{ $(\"Sanitize Error\").item.json.workflow_name }}"
+            },
+            {
+              "column": "error_message",
+              "fieldValue": "{{ $(\"Sanitize Error\").item.json.error_message }}"
+            },
+            {
+              "column": "execution_id",
+              "fieldValue": "{{ $(\"Sanitize Error\").item.json.execution_id }}"
+            },
+            {
+              "column": "resolved",
+              "fieldValue": "{{ $(\"Sanitize Error\").item.json.resolved }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "continueOnFail": true,
+      "id": "83ca8845-ec8e-46c0-ac60-5337788a32a2",
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "name": "Alert via ntfy",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/system-errors",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "X-Title",
+              "value": "Workflow Error: {{ $(\"Sanitize Error\").item.json.workflow_name }}"
+            },
+            {
+              "name": "X-Priority",
+              "value": "4"
+            },
+            {
+              "name": "X-Tags",
+              "value": "rotating_light"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyType": "raw",
+        "body": "Workflow '{{ $(\"Sanitize Error\").item.json.workflow_name }}' failed — check error_log sheet for details"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ntfy-auth"
+        }
+      },
+      "continueOnFail": true,
+      "id": "6fe7c0fc-129a-4490-afab-6e1b89e8d1a8",
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "name": "Check If Both Failed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// If both Sheets and ntfy failed, fall back to local file\nconst sheetsOk = $('Log to Error Sheet').item.json ? true : false;\nconst ntfyOk = $('Alert via ntfy').item.json ? true : false;\n\n// Note: \"Continue on Fail\" makes the node output available even on failure,\n// but with an error property. Check for it:\nconst sheetsFailed = $('Log to Error Sheet').item.json?.error ? true : false;\nconst ntfyFailed = $('Alert via ntfy').item.json?.error ? true : false;\n\nreturn { json: {\n  both_failed: sheetsFailed && ntfyFailed,\n  error_data: $('Sanitize Error').item.json\n}};\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "10a7bf05-694b-4f5f-83a8-552025ae9e5c",
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "name": "Both Failed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json.both_failed }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "ae637d1e-f8e8-420f-805a-481eb3aa1059",
+      "position": [
+        250,
+        520
+      ]
+    },
+    {
+      "name": "Fallback to File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Write error to local file as last resort (both Sheets and ntfy are down)\n// Using fs.appendFileSync avoids shell injection risks from error_message content\nconst fs = require('fs');\nconst data = $json.error_data;\nconst line = `${data.timestamp} | ${data.workflow_name} | ${data.error_message}\\n`;\nfs.appendFileSync('/home/pi/.n8n/error-fallback.log', line);\nreturn { json: { fallback_logged: true } };\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "1bdfa020-8b72-449a-abae-850914106bf5",
+      "position": [
+        470,
+        520
+      ]
+    }
+  ],
+  "connections": {
+    "Catch Errors": {
+      "main": [
+        [
+          {
+            "node": "Sanitize Error",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sanitize Error": {
+      "main": [
+        [
+          {
+            "node": "Log to Error Sheet",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Alert via ntfy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log to Error Sheet": {
+      "main": [
+        [
+          {
+            "node": "Check If Both Failed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert via ntfy": {
+      "main": [
+        [
+          {
+            "node": "Check If Both Failed",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Check If Both Failed": {
+      "main": [
+        [
+          {
+            "node": "Both Failed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Both Failed?": {
+      "main": [
+        [
+          {
+            "node": "Fallback to File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

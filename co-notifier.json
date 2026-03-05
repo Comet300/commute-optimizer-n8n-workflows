@@ -1,0 +1,351 @@
+{
+  "name": "co-notifier",
+  "active": false,
+  "nodes": [
+    {
+      "name": "Input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "parameters": {},
+      "id": "b679d3fb-0130-4eec-924f-8682d1798261",
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "name": "Parse Channels",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\nconst channels = JSON.parse($json.channels || '[\"push\"]');\nreturn { json: {\n  ...$json,\n  send_push: channels.includes('push'),\n  send_tts: channels.includes('tts'),\n  send_sms: channels.includes('sms')\n}};\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "6586b180-d3ac-4936-b2af-5d459545cea3",
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "name": "Send Push?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json.send_push }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "ff8c6406-f88c-4b9a-8146-67ced8af447a",
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "name": "Send ntfy Push",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.sh/{{ $('Parse Channels').item.json.ntfy_topic }}",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "X-Title",
+              "value": "{{ $(\"Parse Channels\").item.json.title }}"
+            },
+            {
+              "name": "X-Priority",
+              "value": "3"
+            },
+            {
+              "name": "X-Tags",
+              "value": "calendar"
+            },
+            {
+              "name": "X-Actions",
+              "value": "http, Cancel Event, https://YOUR_EXTERNAL_URL:5679/webhook/cancel-event, method=POST, headers.X-Cancel-Token={{ $vars.CANCEL_SECRET }}, body={\"event_id\":\"{{ $(\"Parse Channels\").item.json.event_id }}\",\"user_id\":\"{{ $(\"Parse Channels\").item.json.user_id }}\"}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyType": "json",
+        "body": "{{ $(\"Parse Channels\").item.json.message }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ntfy-auth"
+        }
+      },
+      "continueOnFail": true,
+      "id": "e2b78b77-f337-41bd-bd9b-7264db30fa45",
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "name": "Send TTS?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json.send_tts }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "29b55ef9-5c12-451a-bada-9c0be995836d",
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "name": "Speak on Google Home",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "parameters": {
+        "command": "/home/pi/commute-automation/tts.sh GOOGLE_HOME_IP \"{{ $(\"Parse Channels\").item.json.message }}\" en"
+      },
+      "continueOnFail": true,
+      "id": "750c02b8-7a24-49a0-92e5-2cdd7305c7fd",
+      "position": [
+        250,
+        520
+      ]
+    },
+    {
+      "name": "Send SMS?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json.send_sms }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "a3eb352a-ac29-4c16-90db-f489f235050c",
+      "position": [
+        470,
+        520
+      ]
+    },
+    {
+      "name": "Send Twilio SMS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.twilio.com/2010-04-01/Accounts/{{ $vars.TWILIO_ACCOUNT_SID }}/Messages.json",
+        "authentication": "none",
+        "options": {},
+        "sendBody": true,
+        "bodyType": "json",
+        "body": "From={{ $vars.TWILIO_PHONE_NUMBER }}&To={{ $(\"Parse Channels\").item.json.phone_number }}&Body={{ encodeURIComponent($(\"Parse Channels\").item.json.message) }}"
+      },
+      "credentials": {
+        "twilioApi": {
+          "id": "",
+          "name": "twilio-api"
+        }
+      },
+      "continueOnFail": true,
+      "id": "e77ab644-38fb-4523-b022-dc43dc9643d0",
+      "position": [
+        690,
+        520
+      ]
+    },
+    {
+      "name": "Combine Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "parameters": {
+        "mode": "append",
+        "options": {}
+      },
+      "id": "e09543c7-77bd-44d4-a58d-d05220abbeda",
+      "position": [
+        910,
+        520
+      ]
+    },
+    {
+      "name": "Build Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Check which channels succeeded\nconst results = $input.all().map(i => i.json);\nconst anyOk = results.some(r => !r.error);\n\nreturn { json: {\n  delivered: anyOk,\n  results: results\n}};\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "fca81861-6c5d-44fd-9dc3-e25c7e7c0692",
+      "position": [
+        1130,
+        520
+      ]
+    }
+  ],
+  "connections": {
+    "Input": {
+      "main": [
+        [
+          {
+            "node": "Parse Channels",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Channels": {
+      "main": [
+        [
+          {
+            "node": "Send Push?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send TTS?",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send SMS?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Push?": {
+      "main": [
+        [
+          {
+            "node": "Send ntfy Push",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send ntfy Push": {
+      "main": [
+        [
+          {
+            "node": "Combine Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send TTS?": {
+      "main": [
+        [
+          {
+            "node": "Speak on Google Home",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Speak on Google Home": {
+      "main": [
+        [
+          {
+            "node": "Combine Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send SMS?": {
+      "main": [
+        [
+          {
+            "node": "Send Twilio SMS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Twilio SMS": {
+      "main": [
+        [
+          {
+            "node": "Combine Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine Results": {
+      "main": [
+        [
+          {
+            "node": "Build Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": ""
+  }
+}

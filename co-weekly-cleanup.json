@@ -1,0 +1,360 @@
+{
+  "name": "co-weekly-cleanup",
+  "active": false,
+  "nodes": [
+    {
+      "name": "Sunday 4 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "mode": "custom",
+              "cronExpression": "0 4 * * 0"
+            }
+          ]
+        }
+      },
+      "id": "894dd830-339c-404c-9160-e4dd5650825d",
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "name": "Read Location Updates",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "location_updates"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "32283cc9-bf13-4d5f-890e-fb23b6c4502b",
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "name": "Find Old Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Find rows older than 7 days\nconst sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);\nconst items = $input.all();\nconst oldRows = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const ts = new Date(items[i].json.timestamp);\n  if (ts < sevenDaysAgo) {\n    // Google Sheets rows are 1-indexed, header is row 1, data starts at row 2\n    oldRows.push({ json: { row_number: i + 2, timestamp: items[i].json.timestamp } });\n  }\n}\n\n// Sort descending so we delete from bottom up (avoids row number shifts)\noldRows.sort((a, b) => b.json.row_number - a.json.row_number);\nreturn oldRows;\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "ebf4a805-ccc4-41aa-a930-f4ab98131ce8",
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "name": "Delete Old Locations",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "e5660ce1-2465-4a12-a1cd-89b14cdb8f63",
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "name": "Delete Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "delete",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "location_updates"
+        },
+        "startIndex": "={{ $json.row_number }}",
+        "endIndex": "={{ $json.row_number }}"
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "c0e1b18b-1a47-4280-b836-2ef6f9852cb9",
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "name": "Read Error Log",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "error_log"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "574999a0-3731-4e75-9641-61bd34c1c91f",
+      "position": [
+        250,
+        520
+      ]
+    },
+    {
+      "name": "Find Old Errors",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Find rows older than 90 days\nconst ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);\nconst items = $input.all();\nconst oldRows = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const ts = new Date(items[i].json.timestamp);\n  if (ts < ninetyDaysAgo) {\n    // Google Sheets rows are 1-indexed, header is row 1, data starts at row 2\n    oldRows.push({ json: { row_number: i + 2, timestamp: items[i].json.timestamp } });\n  }\n}\n\n// Sort descending so we delete from bottom up (avoids row number shifts)\noldRows.sort((a, b) => b.json.row_number - a.json.row_number);\nreturn oldRows;\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "614b0c38-03d8-4143-879d-99f5d31f0ff2",
+      "position": [
+        470,
+        520
+      ]
+    },
+    {
+      "name": "Delete Old Error Rows",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "94dffe44-1bf8-4b90-bf06-0b8ba170d2ae",
+      "position": [
+        690,
+        520
+      ]
+    },
+    {
+      "name": "Delete Error Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "delete",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "error_log"
+        },
+        "startIndex": "={{ $json.row_number }}",
+        "endIndex": "={{ $json.row_number }}"
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "96f55db9-2394-44d4-b768-7d96e9b60f7d",
+      "position": [
+        910,
+        520
+      ]
+    },
+    {
+      "name": "Update last_cleanup_at",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "user_config"
+        },
+        "dataMode": "defineBelow",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [
+            "user_id"
+          ]
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "last_cleanup_at",
+              "fieldValue": "{{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "6278a162-300c-4960-9894-39e1cf144f15",
+      "position": [
+        1130,
+        520
+      ]
+    }
+  ],
+  "connections": {
+    "Sunday 4 AM": {
+      "main": [
+        [
+          {
+            "node": "Read Location Updates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Location Updates": {
+      "main": [
+        [
+          {
+            "node": "Find Old Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Old Rows": {
+      "main": [
+        [
+          {
+            "node": "Delete Old Locations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Old Locations": {
+      "main": [
+        [
+          {
+            "node": "Read Error Log",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Delete Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Row": {
+      "main": [
+        [
+          {
+            "node": "Delete Old Locations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Error Log": {
+      "main": [
+        [
+          {
+            "node": "Find Old Errors",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Old Errors": {
+      "main": [
+        [
+          {
+            "node": "Delete Old Error Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Old Error Rows": {
+      "main": [
+        [
+          {
+            "node": "Update last_cleanup_at",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Delete Error Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Error Row": {
+      "main": [
+        [
+          {
+            "node": "Delete Old Error Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": ""
+  }
+}

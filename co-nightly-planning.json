@@ -1,0 +1,1382 @@
+{
+  "name": "co-nightly-planning",
+  "active": false,
+  "nodes": [
+    {
+      "name": "4 AM Daily",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 4,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "7cba494f-6550-40d2-80cd-3107c7195d20",
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "name": "Read Yesterday's Plan",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "207cc8bc-b6d4-4d4c-8574-a3c09594e731",
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "name": "Find Stale Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// Stale-state reconciliation: find events where current_state is NOT terminal\n// and end_time + 60 min has passed\nconst now = new Date();\nconst items = $input.all();\nconst staleEvents = [];\nconst cleanEvents = [];\n\nfor (const item of items) {\n  const row = item.json;\n  const endTime = new Date(row.end_time);\n  const sixtyMinAfterEnd = new Date(endTime.getTime() + 60 * 60 * 1000);\n  const terminalStates = ['arrived', 'cancelled', 'skipped', 'expired'];\n  const isTerminal = terminalStates.includes(row.current_state);\n\n  if (!isTerminal && now > sixtyMinAfterEnd) {\n    // Check cancel_requested_at — if user cancelled recently, honor that\n    let newState = 'expired';\n    if (row.cancel_requested_at) {\n      const cancelTime = new Date(row.cancel_requested_at);\n      const sixtyMinAgo = new Date(now.getTime() - 60 * 60 * 1000);\n      if (cancelTime > sixtyMinAgo) {\n        newState = 'cancelled';\n      }\n    }\n    staleEvents.push({\n      ...row,\n      new_state: newState,\n      new_state_version: (parseInt(row.state_version) || 0) + 1\n    });\n  }\n}\n\nreturn staleEvents.map(e => ({ json: e }));",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "02abc610-ff21-492d-8bcd-59ab3cb49f1e",
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "name": "Any Stale Events?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $input.all().length }}",
+              "rightValue": "0",
+              "operation": {
+                "type": "string",
+                "operation": "larger",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "7e9adc0d-a0af-4099-ad6e-453a6b011a0b",
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "name": "Update Stale State",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "dataMode": "defineBelow",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [
+            "event_id"
+          ]
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "event_id",
+              "fieldValue": "{{ $json.event_id }}"
+            },
+            {
+              "column": "current_state",
+              "fieldValue": "{{ $json.new_state }}"
+            },
+            {
+              "column": "state_version",
+              "fieldValue": "{{ $json.new_state_version }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "7f85b9f6-7725-44ef-8b61-be9881375248",
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "name": "Write Stale History",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "commute_history"
+        },
+        "dataMode": "defineBelow",
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "timestamp",
+              "fieldValue": "{{ $now.toISO() }}"
+            },
+            {
+              "column": "event_id",
+              "fieldValue": "{{ $json.event_id }}"
+            },
+            {
+              "column": "user_id",
+              "fieldValue": "{{ $json.user_id }}"
+            },
+            {
+              "column": "event_title",
+              "fieldValue": "{{ $json.title }}"
+            },
+            {
+              "column": "planned_departure",
+              "fieldValue": "{{ $json.departure_time }}"
+            },
+            {
+              "column": "planned_travel_min",
+              "fieldValue": "{{ $json.commute_minutes }}"
+            },
+            {
+              "column": "arrived_on_time",
+              "fieldValue": "unknown"
+            },
+            {
+              "column": "commute_mode",
+              "fieldValue": "{{ $json.commute_mode }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "db2c8f3f-594b-466f-8093-574b0e2429a0",
+      "position": [
+        250,
+        520
+      ]
+    },
+    {
+      "name": "Read User Config",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "user_config"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "da0cb098-3a5f-4667-9e38-4ca3286c2547",
+      "position": [
+        470,
+        520
+      ]
+    },
+    {
+      "name": "Loop Users",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "a4962794-3b69-4bdf-a125-23594b47d662",
+      "position": [
+        690,
+        520
+      ]
+    },
+    {
+      "name": "Detect Dynamic Origin",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// Dynamic origin detection — prepare default origin from n8n Variables.\n// The subsequent Sheets read (Node 7a) + Code node (Node 7b) may override\n// with the user's actual location if they're travelling.\nconst user = $json;\nconst homeCoords = $vars.HOME_COORDS; // e.g. \"44.4268,26.1025\"\nconst [homeLat, homeLng] = homeCoords.split(',').map(Number);\n\nreturn {\n  json: {\n    ...user,\n    home_lat: homeLat,\n    home_lng: homeLng,\n    origin_coords: homeCoords,\n    origin_type: 'home'\n  }\n};",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "4c800d59-9c19-4578-9652-b7e7d2b1a782",
+      "position": [
+        910,
+        520
+      ]
+    },
+    {
+      "name": "Read Latest Location",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "location_updates"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "ee1958b9-d445-435b-a12b-168afc6c9403",
+      "position": [
+        1130,
+        520
+      ]
+    },
+    {
+      "name": "Check If Travelling",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// Check if user's last known location is >5km from home\nconst user = $('Loop Users').item.json;\nconst allLocationRows = $input.all();\nconst homeLat = user.home_lat;\nconst homeLng = user.home_lng;\n\n// Filter to THIS user's locations only (Node 7a reads all users' rows)\nconst locationRows = allLocationRows.filter(r => r.json.user_id === user.user_id);\n\nlet origin_coords = `${homeLat},${homeLng}`;\nlet origin_type = 'home';\n\nif (locationRows.length > 0) {\n  const loc = locationRows[0].json;\n  const locTime = new Date(loc.timestamp);\n  const eightHoursAgo = new Date(Date.now() - 8 * 60 * 60 * 1000);\n\n  if (locTime > eightHoursAgo) {\n    // Calculate distance using Haversine formula\n    const R = 6371; // Earth radius in km\n    const dLat = (loc.latitude - homeLat) * Math.PI / 180;\n    const dLng = (loc.longitude - homeLng) * Math.PI / 180;\n    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +\n              Math.cos(homeLat * Math.PI / 180) * Math.cos(loc.latitude * Math.PI / 180) *\n              Math.sin(dLng/2) * Math.sin(dLng/2);\n    const distance = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));\n\n    if (distance > 5) {\n      origin_coords = `${loc.latitude},${loc.longitude}`;\n      origin_type = 'travel';\n    }\n  }\n}\n\nreturn { json: { ...user, origin_coords, origin_type } };",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "0550bbbd-ce88-4325-aaea-18675e00009d",
+      "position": [
+        250,
+        740
+      ]
+    },
+    {
+      "name": "Refresh Calendar Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "https://oauth2.googleapis.com/token",
+        "authentication": "none",
+        "options": {},
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "grant_type",
+              "value": "refresh_token"
+            },
+            {
+              "name": "refresh_token",
+              "value": "{{ $(\"Loop Users\").item.json.calendar_refresh_token }}"
+            },
+            {
+              "name": "client_id",
+              "value": "{{ $vars.GOOGLE_CLIENT_ID }}"
+            },
+            {
+              "name": "client_secret",
+              "value": "{{ $vars.GOOGLE_CLIENT_SECRET }}"
+            }
+          ]
+        }
+      },
+      "id": "184518f7-2f96-430e-906e-84a5f8bd45df",
+      "position": [
+        470,
+        740
+      ]
+    },
+    {
+      "name": "Fetch Calendar Events",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+        "authentication": "none",
+        "options": {},
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $json.access_token }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "timeMin",
+              "value": "{{ $now.startOf('day').toISO() }}"
+            },
+            {
+              "name": "timeMax",
+              "value": "{{ $now.endOf('day').toISO() }}"
+            },
+            {
+              "name": "singleEvents",
+              "value": "true"
+            },
+            {
+              "name": "orderBy",
+              "value": "startTime"
+            },
+            {
+              "name": "maxResults",
+              "value": "50"
+            }
+          ]
+        }
+      },
+      "id": "afd43a30-b1c3-476c-89c2-bda5bb455d18",
+      "position": [
+        690,
+        740
+      ]
+    },
+    {
+      "name": "Read Today's Existing Plan",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "e27faec4-f0bb-4319-8b4c-42e7785e9311",
+      "position": [
+        910,
+        740
+      ]
+    },
+    {
+      "name": "Loop Events",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "4f0cd942-102b-47bd-8017-4fb7e7f2ab15",
+      "position": [
+        1130,
+        740
+      ]
+    },
+    {
+      "name": "Classify Event",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "parameters": {
+        "source": "database",
+        "workflowId": "",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "cbc400a6-7f65-4ab7-8333-8b5c09ee4eb6",
+      "position": [
+        250,
+        960
+      ]
+    },
+    {
+      "name": "Should Skip?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json.skip }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "63a81f05-f508-4b1d-a704-8f176c59112f",
+      "position": [
+        470,
+        960
+      ]
+    },
+    {
+      "name": "Is Online?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json.is_online }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "83553305-b6f4-46c2-a33e-5e3835a9cc58",
+      "position": [
+        690,
+        960
+      ]
+    },
+    {
+      "name": "Calculate Online Reminders",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// Online events only get T-60 and T-15 reminders.\n// at_home is set from origin_type (same as physical events). WF4 updates it via GPS.\nconst event = $json;\nconst user = $('Loop Users').item.json;\nconst origin = $('Check If Travelling').item.json;\nconst start = new Date(event.adjusted_start);\nconst remind60 = new Date(start.getTime() - 60 * 60 * 1000);\nconst remind15 = new Date(start.getTime() - 15 * 60 * 1000);\n\nreturn { json: {\n  event_id: event.event_id,\n  user_id: user.user_id,\n  title: event.title,\n  start_time: event.adjusted_start,\n  end_time: event.adjusted_end,\n  location: '',\n  location_coords: '',\n  is_online: true,\n  is_tentative: event.is_tentative,\n  commute_mode: 'none',\n  departure_time: '',\n  commute_minutes: 0,\n  weather_worst: '',\n  clothing_advice: '',\n  remind_dressed: '',\n  remind_60: remind60.toISOString(),\n  remind_30: '',\n  remind_15: remind15.toISOString(),\n  remind_now: '',\n  plan_date: $now.toFormat('yyyy-MM-dd'),\n  origin_coords: origin.origin_coords,\n  origin_type: origin.origin_type,\n  ntfy_topic: user.ntfy_topic,\n  at_home: origin.origin_type === 'home',\n  current_state: 'planned',\n  state_version: 0\n}};",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "874809a5-d007-4b1a-a3d8-3fd9ca89ebe3",
+      "position": [
+        910,
+        960
+      ]
+    },
+    {
+      "name": "Geocode Location",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "https://maps.googleapis.com/maps/api/geocode/json",
+        "authentication": "genericCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "address",
+              "value": "{{ $json.location }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "",
+          "name": "google-maps-api"
+        }
+      },
+      "id": "86ed5e1c-1af5-46bf-ae9f-e8c289d1c22e",
+      "position": [
+        1130,
+        960
+      ]
+    },
+    {
+      "name": "Geocode OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json.status }}",
+              "rightValue": "OK",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "ac27cd66-bb4e-4458-843c-652cf5c134c3",
+      "position": [
+        250,
+        1180
+      ]
+    },
+    {
+      "name": "Handle Geocode Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// Geocode failed — build a row without commute data.\n// The event still appears in daily_plan but with no departure time or travel info.\n// WF3 will send reminders based on start_time only (remind_60, remind_15).\nconst event = $('Classify Event').item.json;\nconst user = $('Loop Users').item.json;\nconst origin = $('Check If Travelling').item.json;\nconst start = new Date(event.adjusted_start);\n\nreturn { json: {\n  event_id: event.event_id,\n  user_id: user.user_id,\n  title: event.title,\n  start_time: event.adjusted_start,\n  end_time: event.adjusted_end,\n  location: event.location,\n  location_coords: '',\n  is_online: false,\n  is_tentative: event.is_tentative,\n  commute_mode: '',\n  departure_time: '',\n  commute_minutes: 0,\n  weather_worst: '',\n  clothing_advice: '',\n  remind_dressed: '',\n  remind_60: new Date(start.getTime() - 60 * 60 * 1000).toISOString(),\n  remind_30: '',\n  remind_15: new Date(start.getTime() - 15 * 60 * 1000).toISOString(),\n  remind_now: '',\n  plan_date: $now.toFormat('yyyy-MM-dd'),\n  origin_coords: origin.origin_coords,\n  origin_type: origin.origin_type,\n  ntfy_topic: user.ntfy_topic,\n  at_home: origin.origin_type === 'home',\n  current_state: 'planned',\n  state_version: 0,\n  _geocode_failed: true\n}};",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "c2bb1ae3-0ecc-44e3-9849-4fa953b060cc",
+      "position": [
+        470,
+        1180
+      ]
+    },
+    {
+      "name": "Extract Coordinates",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "parameters": {
+        "mode": "manual",
+        "options": {
+          "include": "all"
+        },
+        "assignments": {
+          "assignments": [
+            {
+              "id": "0",
+              "name": "location_coords",
+              "value": "{{ $json.results[0].geometry.location.lat }},{{ $json.results[0].geometry.location.lng }}",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "e19075d9-d656-494c-960f-2c717978c04e",
+      "position": [
+        690,
+        1180
+      ]
+    },
+    {
+      "name": "Calculate Departure",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "parameters": {
+        "source": "database",
+        "workflowId": "",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "df30b06c-b3da-4ecc-8351-0abbcfc852e8",
+      "position": [
+        910,
+        1180
+      ]
+    },
+    {
+      "name": "Get Weather",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "parameters": {
+        "source": "database",
+        "workflowId": "",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "1a3d9bd9-4b08-4440-a93b-0b713c6bca83",
+      "position": [
+        1130,
+        1180
+      ]
+    },
+    {
+      "name": "Calculate Reminders + Build Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// --- Required n8n Variables check ---\nconst requiredVars = ['HOME_COORDS', 'HOME_RADIUS_METERS', 'DRESS_REMINDER_INTERVALS'];\nconst missingVars = requiredVars.filter(k => !$vars[k]);\nif (missingVars.length) {\n  throw new Error(`Missing n8n Variables: ${missingVars.join(', ')}. Set them in Settings → Variables before activating workflows.`);\n}\n\n// Combine all data into a daily_plan row\nconst classified = $('Classify Event').item.json;\nconst departure = $('Calculate Departure').item.json;\nconst weather = $json; // output of Sub-WF B\nconst user = $('Loop Users').item.json;\nconst origin = $('Check If Travelling').item.json;\n\n// --- At-home initial state ---\n// Set at_home based on origin_type. WF4 will update this in real-time based on GPS\n// position throughout the day — no need to predict from event locations here.\nconst atHome = origin.origin_type === 'home';\n\n// --- Reminder times ---\nconst ALL_DRESS_INTERVALS = $vars.DRESS_REMINDER_INTERVALS.split(',').map(s => s.trim()).filter(Boolean).map(Number).filter(n => !isNaN(n)); // e.g. \"90,60,30,15\" → [90, 60, 30, 15]\n\n// Apply dress_cap: if event has [dress:N] or [N] tag, only use intervals ≤ N\nconst dressCap = classified.dress_cap || 0;\nconst DRESS_INTERVALS = dressCap > 0\n  ? ALL_DRESS_INTERVALS.filter(n => n <= dressCap)\n  : ALL_DRESS_INTERVALS;\nconst maxInterval = DRESS_INTERVALS.length > 0 ? Math.max(...DRESS_INTERVALS) : 0;\n\nconst depTime = new Date(departure.departure_time);\nconst fourAM = new Date(depTime);\nfourAM.setHours(4, 0, 0, 0);\n\n// remind_dressed = max(departure - max(filtered intervals), 04:00)\n// Stores the earliest dressed reminder time. WF3 expands the filtered intervals\n// into individual checks (e.g., remind_dressed_30, remind_dressed_15 for a [30] event).\n// These only fire if at_home == true (maintained by WF4 based on real GPS position).\nconst dressedEarliest = maxInterval > 0\n  ? new Date(depTime.getTime() - maxInterval * 60 * 1000)\n  : depTime; // no intervals → no early reminder\nconst remindDressed = dressedEarliest < fourAM ? fourAM : dressedEarliest;\n\n// State column guard: if this event already exists with a non-\"planned\" state,\n// preserve its current_state and state_version. This prevents WF1 re-runs\n// (e.g., WF7 catch-up) from overwriting WF4's mid-day state transitions.\nconst existingRows = $(\"Read Today's Existing Plan\").all().map(i => i.json);\nconst existingRow = existingRows.find(r => r.event_id === classified.event_id);\nconst preserveState = existingRow && existingRow.current_state\n  && existingRow.current_state !== 'planned';\n\nconst row = {\n  event_id: classified.event_id,\n  user_id: user.user_id,\n  title: classified.title,\n  start_time: classified.adjusted_start,\n  end_time: classified.adjusted_end,\n  location: classified.location,\n  location_coords: $('Extract Coordinates').item.json.location_coords,\n  is_online: false,\n  is_tentative: classified.is_tentative,\n  commute_mode: departure.commute_mode,\n  departure_time: departure.departure_time,\n  commute_minutes: departure.commute_minutes,\n  weather_worst: weather.weather_worst || '',\n  clothing_advice: weather.clothing_advice || '',\n  dress_cap: dressCap,\n  remind_dressed: remindDressed.toISOString(),\n  remind_60: new Date(depTime.getTime() - 60 * 60 * 1000).toISOString(),\n  remind_30: new Date(depTime.getTime() - 30 * 60 * 1000).toISOString(),\n  remind_15: new Date(depTime.getTime() - 15 * 60 * 1000).toISOString(),\n  remind_now: departure.departure_time,\n  plan_date: $now.toFormat('yyyy-MM-dd'),\n  origin_coords: origin.origin_coords,\n  origin_type: origin.origin_type,\n  ntfy_topic: user.ntfy_topic,\n  at_home: atHome\n};\n\nif (preserveState) {\n  // Row exists with active state transition — don't reset.\n  // Omit current_state and state_version so the upsert preserves existing values.\n  // (Unmapped columns are preserved by the native \"Append or Update Row\" operation.)\n} else {\n  row.current_state = 'planned';\n  row.state_version = 0;\n}\n\nreturn { json: row };",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "ffe99fbd-9429-40a7-9e78-ac03260619d3",
+      "position": [
+        250,
+        1400
+      ]
+    },
+    {
+      "name": "Upsert Daily Plan Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "upsert",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "dataMode": "autoMapInputData",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [
+            "event_id"
+          ]
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "d3e0150a-1a0a-481c-9cb7-bbdfbb6d75df",
+      "position": [
+        470,
+        1400
+      ]
+    },
+    {
+      "name": "Re-Read Today's Plan for Digest",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "2286c5f0-c371-4d8d-b566-c7a95168faa7",
+      "position": [
+        690,
+        1400
+      ]
+    },
+    {
+      "name": "Build Morning Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "const allRows = $input.all().map(i => i.json);\nconst user = $('Loop Users').item.json;\nconst origin = $('Check If Travelling').item.json;\nconst today = $now.toFormat('yyyy-MM-dd');\nconst events = allRows.filter(r => r.user_id === user.user_id && r.plan_date === today);\n\nlet digest = `Good morning ${user.full_name}!\n`;\ndigest += `Planning from: ${origin.origin_type === 'travel' ? 'current location (travel mode)' : 'home'}\n\n`;\n\nif (events.length === 0) {\n  digest += \"No events today — enjoy your free day!\";\n} else {\n  for (const evt of events) {\n    const prefix = evt.is_tentative ? '⚠ Tentative: ' : '';\n    if (evt.is_online) {\n      digest += `${prefix}💻 ${evt.title} at ${evt.start_time}\n`;\n    } else {\n      digest += `${prefix}🚗 ${evt.title} at ${evt.start_time}\n`;\n      digest += `   Depart by ${evt.departure_time} (${evt.commute_minutes} min, ${evt.commute_mode})\n`;\n      if (evt.clothing_advice) digest += `   👔 ${evt.clothing_advice}\n`;\n    }\n  }\n}\n\nreturn { json: { message: digest, ntfy_topic: user.ntfy_topic } };",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "adc18213-d2b3-4a2d-b0a1-b2c081b2b19f",
+      "position": [
+        910,
+        1400
+      ]
+    },
+    {
+      "name": "Send Morning Digest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/{{ $json.ntfy_topic }}",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "X-Title",
+              "value": "Morning Commute Plan"
+            },
+            {
+              "name": "X-Priority",
+              "value": "2"
+            },
+            {
+              "name": "X-Tags",
+              "value": "calendar"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyType": "raw",
+        "body": "{{ $json.message }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ntfy-auth"
+        }
+      },
+      "id": "d46d4481-63fc-44b5-a139-91804059eb47",
+      "position": [
+        1130,
+        1400
+      ]
+    },
+    {
+      "name": "Re-Read Plan for Tracking Calc",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "65c54d51-582c-4572-a257-86a4b76c5aac",
+      "position": [
+        250,
+        1620
+      ]
+    },
+    {
+      "name": "Calculate Tracking Intervals",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// For each user's earliest non-online event, calculate the initial GPS polling interval.\n// Users with no trackable events today get filtered out.\nconst rows = $input.all().map(i => i.json);\nconst now = $now; // Luxon DateTime, inherits GENERIC_TIMEZONE from n8n env config\n\n// Group by user_id, find earliest planned departure per user\nconst userMap = {};\nfor (const row of rows) {\n  if (row.is_online === 'TRUE' || row.is_online === true) continue;\n  if (['cancelled', 'skipped', 'expired'].includes(row.current_state)) continue;\n\n  const userId = row.user_id;\n  if (!userMap[userId]) {\n    userMap[userId] = row;\n  } else {\n    // Keep the earlier departure\n    const existing = DateTime.fromISO(userMap[userId].departure_time);\n    const candidate = DateTime.fromISO(row.departure_time);\n    if (candidate < existing) {\n      userMap[userId] = row;\n    }\n  }\n}\n\n// Parse tracking interval tiers from $vars (or use defaults)\nconst tierStr = $vars.TRACKING_INTERVAL_TIERS; // e.g. \"60:20,30:10,15:5,5:3\"\nlet tiers = [\n  { withinMin: 60, interval: 20 },\n  { withinMin: 30, interval: 10 },\n  { withinMin: 15, interval: 5 },\n  { withinMin: 5, interval: 3 }\n];\nif (tierStr) {\n  tiers = tierStr.split(',').map(pair => {\n    const [withinMin, interval] = pair.split(':').map(Number);\n    return { withinMin, interval };\n  }).sort((a, b) => a.withinMin - b.withinMin); // ascending by threshold\n}\n\nconst results = [];\nfor (const [userId, row] of Object.entries(userMap)) {\n  const departure = DateTime.fromISO(row.departure_time);\n  const minUntilDeparture = departure.diff(now, 'minutes').minutes;\n\n  if (minUntilDeparture <= 0) continue; // already past departure\n\n  // Find matching tier (smallest threshold that is >= minUntilDeparture, else largest)\n  let interval = tiers[tiers.length - 1].interval; // default to tightest\n  for (let i = tiers.length - 1; i >= 0; i--) {\n    if (minUntilDeparture > tiers[i].withinMin) {\n      interval = tiers[i].interval;\n      break;\n    }\n  }\n\n  results.push({\n    json: {\n      user_id: userId,\n      ntfy_topic: row.ntfy_topic,\n      initial_interval: interval,\n      earliest_departure: row.departure_time,\n      minutes_until_departure: Math.round(minUntilDeparture)\n    }\n  });\n}\n\nif (results.length === 0) {\n  // No users need tracking today (all online events or no events)\n  return [{ json: { _no_tracking_needed: true } }];\n}\n\nreturn results;",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "e085f206-b7ba-4656-b4cb-a988e8e99c7f",
+      "position": [
+        470,
+        1620
+      ]
+    },
+    {
+      "name": "Anyone Needs Tracking?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json._no_tracking_needed }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "notEqual",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "4327cae2-9c04-41da-ab87-ad14bbcca639",
+      "position": [
+        690,
+        1620
+      ]
+    },
+    {
+      "name": "Loop Users for Tracking",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "1cba08b1-7b0d-48b7-8763-3c12963198e1",
+      "position": [
+        910,
+        1620
+      ]
+    },
+    {
+      "name": "Send Start-Tracking Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/{{ $json.ntfy_topic }}",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "X-Title",
+              "value": "Start GPS Tracking"
+            },
+            {
+              "name": "X-Priority",
+              "value": "3"
+            },
+            {
+              "name": "X-Tags",
+              "value": "round_pushpin"
+            },
+            {
+              "name": "X-Actions",
+              "value": "view, Open Tasker, app://net.dinglisch.android.taskerm;http, Start Tracking, tasker://perform-task?name=Start+Tracking&par1={{ $json.initial_interval }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyType": "raw",
+        "body": "Initial polling interval: {{ $json.initial_interval }} minutes\nEarliest departure: {{ $json.earliest_departure }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ntfy-auth"
+        }
+      },
+      "id": "7145f6fb-11ff-404c-ab25-7300620e276d",
+      "position": [
+        1130,
+        1620
+      ]
+    }
+  ],
+  "connections": {
+    "4 AM Daily": {
+      "main": [
+        [
+          {
+            "node": "Read Yesterday's Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Yesterday's Plan": {
+      "main": [
+        [
+          {
+            "node": "Find Stale Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Stale Events": {
+      "main": [
+        [
+          {
+            "node": "Any Stale Events?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Stale Events?": {
+      "main": [
+        [
+          {
+            "node": "Update Stale State",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Read User Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Stale State": {
+      "main": [
+        [
+          {
+            "node": "Write Stale History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Stale History": {
+      "main": [
+        [
+          {
+            "node": "Read User Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read User Config": {
+      "main": [
+        [
+          {
+            "node": "Loop Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Users": {
+      "main": [
+        [
+          {
+            "node": "Detect Dynamic Origin",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Re-Read Plan for Tracking Calc",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Detect Dynamic Origin": {
+      "main": [
+        [
+          {
+            "node": "Read Latest Location",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Latest Location": {
+      "main": [
+        [
+          {
+            "node": "Check If Travelling",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Travelling": {
+      "main": [
+        [
+          {
+            "node": "Refresh Calendar Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh Calendar Token": {
+      "main": [
+        [
+          {
+            "node": "Fetch Calendar Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Calendar Events": {
+      "main": [
+        [
+          {
+            "node": "Read Today's Existing Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Today's Existing Plan": {
+      "main": [
+        [
+          {
+            "node": "Loop Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Events": {
+      "main": [
+        [
+          {
+            "node": "Classify Event",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Re-Read Today's Plan for Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Event": {
+      "main": [
+        [
+          {
+            "node": "Should Skip?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Skip?": {
+      "main": [
+        [
+          {
+            "node": "Loop Users",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Is Online?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Online?": {
+      "main": [
+        [
+          {
+            "node": "Calculate Online Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Geocode Location",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Online Reminders": {
+      "main": [
+        [
+          {
+            "node": "Upsert Daily Plan Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Geocode Location": {
+      "main": [
+        [
+          {
+            "node": "Geocode OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Geocode OK?": {
+      "main": [
+        [
+          {
+            "node": "Extract Coordinates",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Geocode Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Geocode Failure": {
+      "main": [
+        [
+          {
+            "node": "Upsert Daily Plan Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Coordinates": {
+      "main": [
+        [
+          {
+            "node": "Calculate Departure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Departure": {
+      "main": [
+        [
+          {
+            "node": "Get Weather",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Weather": {
+      "main": [
+        [
+          {
+            "node": "Calculate Reminders + Build Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Reminders + Build Row": {
+      "main": [
+        [
+          {
+            "node": "Upsert Daily Plan Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert Daily Plan Row": {
+      "main": [
+        [
+          {
+            "node": "Loop Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Re-Read Today's Plan for Digest": {
+      "main": [
+        [
+          {
+            "node": "Build Morning Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Morning Digest": {
+      "main": [
+        [
+          {
+            "node": "Send Morning Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Morning Digest": {
+      "main": [
+        [
+          {
+            "node": "Loop Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Re-Read Plan for Tracking Calc": {
+      "main": [
+        [
+          {
+            "node": "Calculate Tracking Intervals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Tracking Intervals": {
+      "main": [
+        [
+          {
+            "node": "Anyone Needs Tracking?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anyone Needs Tracking?": {
+      "main": [
+        [
+          {
+            "node": "Loop Users for Tracking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Users for Tracking": {
+      "main": [
+        [
+          {
+            "node": "Send Start-Tracking Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Start-Tracking Notification": {
+      "main": [
+        [
+          {
+            "node": "Loop Users for Tracking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": "",
+    "timezone": "Europe/Bucharest"
+  }
+}

@@ -1,0 +1,483 @@
+{
+  "name": "co-monthly-statistics",
+  "active": false,
+  "nodes": [
+    {
+      "name": "1st of Month 8 AM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "triggerTimes": {
+          "item": [
+            {
+              "mode": "custom",
+              "cronExpression": "0 8 1 * *"
+            }
+          ]
+        }
+      },
+      "id": "5e86ab54-7dda-4640-b8f1-5c8e1ca2769d",
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "name": "Read Commute History",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "commute_history"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "b1c995a3-941c-45a4-81fe-0d44c24317c0",
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "name": "Calculate Monthly Stats",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Calculate statistics for last month\nconst now = new Date();\nconst lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);\nconst thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);\nconst items = $input.all().map(i => i.json);\n\n// Filter to last month's entries\nconst monthData = items.filter(i => {\n  const ts = new Date(i.timestamp);\n  return ts >= lastMonth && ts < thisMonth;\n});\n\n// Group by user\nconst byUser = {};\nfor (const trip of monthData) {\n  if (!byUser[trip.user_id]) {\n    byUser[trip.user_id] = { trips: [], modes: {} };\n  }\n  byUser[trip.user_id].trips.push(trip);\n  const mode = trip.commute_mode || 'unknown';\n  byUser[trip.user_id].modes[mode] = (byUser[trip.user_id].modes[mode] || 0) + 1;\n}\n\n// Calculate stats per user\nconst results = [];\nfor (const [userId, data] of Object.entries(byUser)) {\n  const onTimeCount = data.trips.filter(t => t.arrived_on_time === 'true' || t.arrived_on_time === true).length;\n  const totalTrips = data.trips.length;\n  const avgDelay = data.trips\n    .filter(t => t.arrival_delay_min)\n    .reduce((sum, t) => sum + parseFloat(t.arrival_delay_min), 0) / (totalTrips || 1);\n\n  // Estimate API calls (Distance Matrix + Geocoding)\n  const nonOnlineTrips = data.trips.filter(t => t.commute_mode !== 'none').length;\n  const dailyAvg = nonOnlineTrips / 30;\n  const distMatrixCalls = Math.round(dailyAvg * 3 * 30 + dailyAvg * 7 * 30); // WF1 + WF2\n  const geocodeCalls = Math.round(nonOnlineTrips * 1.2); // unique locations\n  const totalApiCalls = distMatrixCalls + geocodeCalls;\n  const estimatedCost = (totalApiCalls * 0.005).toFixed(2); // ~$0.005 per call average\n\n  results.push({\n    user_id: userId,\n    total_trips: totalTrips,\n    on_time_pct: totalTrips ? Math.round(onTimeCount / totalTrips * 100) : 0,\n    avg_delay_min: Math.round(avgDelay),\n    modes: JSON.stringify(data.modes),\n    api_calls_estimate: totalApiCalls,\n    api_cost_estimate: estimatedCost,\n    api_warning: totalApiCalls > 5000 ? '⚠ Approaching 12% of $200 free credit' : '✅ Well within free tier'\n  });\n}\n\nreturn results.map(r => ({ json: r }));\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "28db31e6-a753-4177-aa22-4c36c7e4675d",
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "name": "Loop Users",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "dbb2f54c-fdee-44f8-af97-96098d213f95",
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "name": "Build Monthly Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\nconst stats = $json;\nconst modes = JSON.parse(stats.modes);\nconst modeList = Object.entries(modes).map(([m, c]) => `${m}: ${c}`).join(', ');\n\nconst digest = `📊 Monthly Commute Report\n\nTotal trips: ${stats.total_trips}\nOn-time rate: ${stats.on_time_pct}%\nAverage delay: ${stats.avg_delay_min} min\nModes: ${modeList}\n\nMaps API this month: ~${stats.api_calls_estimate} calls ($${stats.api_cost_estimate} of $200 credit used)\n${stats.api_warning}`;\n\nreturn { json: { ...stats, digest } };\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "dc48cd12-e52a-4520-a5e4-cfdfca2d32c7",
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "name": "Send Monthly Digest",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "https://ntfy.sh/reminders-{{ $json.user_id }}",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "X-Title",
+              "value": "Monthly Commute Report"
+            },
+            {
+              "name": "X-Priority",
+              "value": "2"
+            },
+            {
+              "name": "X-Tags",
+              "value": "bar_chart"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyType": "json",
+        "body": "{{ $json.digest }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ntfy-auth"
+        }
+      },
+      "id": "9e25f871-e8d4-48dc-9d48-3df1be9e7e26",
+      "position": [
+        250,
+        520
+      ]
+    },
+    {
+      "name": "Read Daily Plan for Cleanup",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "3c8c886f-85d7-4707-bc55-6219c97c1194",
+      "position": [
+        470,
+        520
+      ]
+    },
+    {
+      "name": "Find Old Daily Plan Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Find daily_plan rows older than 90 days\nconst ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);\nconst items = $input.all();\nconst oldRows = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const planDate = new Date(items[i].json.plan_date);\n  if (planDate < ninetyDaysAgo) {\n    oldRows.push({ json: { row_number: i + 2, plan_date: items[i].json.plan_date } });\n  }\n}\n\n// Sort descending — delete from bottom up to avoid row number shifts\noldRows.sort((a, b) => b.json.row_number - a.json.row_number);\nreturn oldRows;\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "26246d03-7d1b-4557-92d2-9abd728ef683",
+      "position": [
+        690,
+        520
+      ]
+    },
+    {
+      "name": "Delete Old Plan Rows",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "3b10c22b-cdb5-4324-bb73-3b27ee5847f2",
+      "position": [
+        910,
+        520
+      ]
+    },
+    {
+      "name": "Delete Plan Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "delete",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "startIndex": "{{ $json.row_number }}",
+        "endIndex": "={{ $json.row_number + 1 }}"
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "999a138a-0ed2-4b9f-9498-aca16de43526",
+      "position": [
+        1130,
+        520
+      ]
+    },
+    {
+      "name": "Read Commute History for Cleanup",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "commute_history"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "c1fba2e7-b543-4156-b70d-30ff4cf2eee3",
+      "position": [
+        250,
+        740
+      ]
+    },
+    {
+      "name": "Find Old History Rows",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Find commute_history rows older than 90 days (stats already calculated)\nconst ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);\nconst items = $input.all();\nconst oldRows = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const ts = new Date(items[i].json.timestamp);\n  if (ts < ninetyDaysAgo) {\n    oldRows.push({ json: { row_number: i + 2, timestamp: items[i].json.timestamp } });\n  }\n}\n\noldRows.sort((a, b) => b.json.row_number - a.json.row_number);\nreturn oldRows;\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "5e9416dd-3d39-436e-9c04-3d7154d227a8",
+      "position": [
+        470,
+        740
+      ]
+    },
+    {
+      "name": "Delete Old History Rows",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "e737c252-bb5c-4b43-afe5-3c25a9bdb1ba",
+      "position": [
+        690,
+        740
+      ]
+    },
+    {
+      "name": "Delete History Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "delete",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "commute_history"
+        },
+        "startIndex": "{{ $json.row_number }}",
+        "endIndex": "={{ $json.row_number + 1 }}"
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "f10dcc36-bf7f-447b-a77e-4257df1f1d5b",
+      "position": [
+        910,
+        740
+      ]
+    }
+  ],
+  "connections": {
+    "1st of Month 8 AM": {
+      "main": [
+        [
+          {
+            "node": "Read Commute History",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Commute History": {
+      "main": [
+        [
+          {
+            "node": "Calculate Monthly Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Monthly Stats": {
+      "main": [
+        [
+          {
+            "node": "Loop Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Users": {
+      "main": [
+        [
+          {
+            "node": "Read Daily Plan for Cleanup",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Monthly Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Monthly Digest": {
+      "main": [
+        [
+          {
+            "node": "Send Monthly Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Monthly Digest": {
+      "main": [
+        [
+          {
+            "node": "Loop Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Daily Plan for Cleanup": {
+      "main": [
+        [
+          {
+            "node": "Find Old Daily Plan Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Old Daily Plan Rows": {
+      "main": [
+        [
+          {
+            "node": "Delete Old Plan Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Old Plan Rows": {
+      "main": [
+        [
+          {
+            "node": "Read Commute History for Cleanup",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Delete Plan Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Plan Row": {
+      "main": [
+        [
+          {
+            "node": "Delete Old Plan Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Commute History for Cleanup": {
+      "main": [
+        [
+          {
+            "node": "Find Old History Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Old History Rows": {
+      "main": [
+        [
+          {
+            "node": "Delete Old History Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Old History Rows": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Delete History Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete History Row": {
+      "main": [
+        [
+          {
+            "node": "Delete Old History Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": ""
+  }
+}

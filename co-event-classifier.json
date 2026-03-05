@@ -1,0 +1,47 @@
+{
+  "name": "co-event-classifier",
+  "active": false,
+  "nodes": [
+    {
+      "name": "Input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "parameters": {},
+      "id": "e75d10b5-09dc-4cdc-8f99-b89249c9e8de",
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "name": "Classify Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// Sub-WF D: Event Classifier\n// Input: a raw Google Calendar event object from the Execute Workflow Trigger\n//\n// IMPORTANT: When called via Execute Workflow \"Using Fields Below\", nested objects\n// (start, end, attendees, conferenceData) arrive as JSON strings, not objects.\n// The parsing below handles both cases (string or object) defensively.\nconst raw = $json;\nconst event = {\n  id: raw.id,\n  summary: raw.summary,\n  location: raw.location,\n  start: typeof raw.start === 'string' ? JSON.parse(raw.start) : (raw.start || {}),\n  end: typeof raw.end === 'string' ? JSON.parse(raw.end) : (raw.end || {}),\n  attendees: typeof raw.attendees === 'string' ? JSON.parse(raw.attendees) : raw.attendees,\n  conferenceData: typeof raw.conferenceData === 'string' ? JSON.parse(raw.conferenceData) : raw.conferenceData\n};\n\n// --- Check 1: All-day event ---\n// All-day events have event.start.date (a date string like \"2025-06-15\")\n// but NOT event.start.dateTime (which has a full timestamp)\nif (event.start && event.start.date && !event.start.dateTime) {\n  return { skip: true, reason: \"all-day event\" };\n}\n\n// --- Check 2: Declined event ---\n// Google Calendar API includes an attendees array; the user's own entry has \"self\": true\nif (event.attendees && Array.isArray(event.attendees)) {\n  const selfEntry = event.attendees.find(a => a.self === true);\n  if (selfEntry && selfEntry.responseStatus === \"declined\") {\n    return { skip: true, reason: \"declined\" };\n  }\n}\n\n// --- Check 3: No location ---\nconst location = (event.location || \"\").trim();\nif (!location) {\n  // Check if the event has a conferenceData (Google Meet / Zoom link added via calendar UI)\n  const hasConference = event.conferenceData && event.conferenceData.conferenceSolution;\n  if (!hasConference) {\n    // No location AND no video conference — skip\n    return { skip: true, reason: \"no location\" };\n  }\n}\n\n// --- Determine is_online ---\n// Online if location contains video meeting keywords OR has conferenceData\nconst locationLower = location.toLowerCase();\nconst onlineKeywords = [\"zoom\", \"meet\", \"teams\", \"webex\", \"slack\", \"hangout\"];\nconst hasOnlineKeyword = onlineKeywords.some(kw => locationLower.includes(kw));\nconst hasConferenceData = event.conferenceData && event.conferenceData.conferenceSolution;\nconst is_online = hasOnlineKeyword || !!hasConferenceData;\n\n// --- Determine is_tentative ---\nlet is_tentative = false;\nif (event.attendees && Array.isArray(event.attendees)) {\n  const selfEntry = event.attendees.find(a => a.self === true);\n  if (selfEntry && selfEntry.responseStatus === \"tentative\") {\n    is_tentative = true;\n  }\n}\n\n// --- Determine force_car ---\nconst title = event.summary || \"\";\nconst force_car = title.toLowerCase().includes(\"[car]\");\n\n// --- Determine dress_cap ---\n// [dress:N] or [N] in title caps dressed reminder intervals to ≤ N minutes.\n// e.g. \"Gym [30]\" with DRESS_REMINDER_INTERVALS=90,60,30,15 → only 30 and 15 fire.\nlet dress_cap = 0; // 0 = no cap, use all intervals\nconst dressTagMatch = title.match(/\\[dress:(\\d+)\\]/i);\nconst bareNumberMatch = title.match(/\\[(\\d+)\\]/);\nif (dressTagMatch) {\n  dress_cap = parseInt(dressTagMatch[1], 10);\n} else if (bareNumberMatch) {\n  dress_cap = parseInt(bareNumberMatch[1], 10);\n}\n\n// --- Handle multi-day events ---\n// Google Calendar API returns individual instances for recurring events (if singleEvents=true)\n// For multi-day events spanning multiple days, we only process today's portion\nlet adjusted_start = event.start.dateTime || event.start.date;\nlet adjusted_end = event.end.dateTime || event.end.date;\n\n// --- Return classification ---\nreturn {\n  skip: false,\n  is_online: is_online,\n  is_tentative: is_tentative,\n  force_car: force_car,\n  dress_cap: dress_cap,\n  adjusted_start: adjusted_start,\n  adjusted_end: adjusted_end,\n  location: is_online ? null : location,\n  title: title,\n  event_id: event.id\n};",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "ffa0d611-6e4e-4b40-a6ba-d1ce93b25a45",
+      "position": [
+        470,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Input": {
+      "main": [
+        [
+          {
+            "node": "Classify Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": ""
+  }
+}

@@ -1,0 +1,298 @@
+{
+  "name": "co-cancel-event",
+  "active": false,
+  "nodes": [
+    {
+      "name": "Cancel Event",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cancel-event",
+        "authentication": "headerAuth",
+        "responseMode": "lastNode",
+        "responseData": "allEntries",
+        "options": {}
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "webhook-auth"
+        }
+      },
+      "id": "597275d6-6c49-4495-abdf-3d76db4c19df",
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "name": "Read Event Row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "32a162be-dce4-4935-a2d5-f64a7d986f49",
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "name": "Check State + Cancel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\nconst eventId = $('Cancel Event').item.json.body.event_id;\nconst userId = $('Cancel Event').item.json.body.user_id;\nconst rows = $input.all().map(i => i.json);\n\nconst event = rows.find(r => r.event_id === eventId && r.user_id === userId);\nif (!event) {\n  return { json: { reply: 'Event not found', do_update: false } };\n}\n\nconst terminalStates = ['cancelled', 'skipped', 'arrived', 'expired'];\nif (terminalStates.includes(event.current_state)) {\n  return { json: { reply: 'Already terminal: ' + event.current_state, do_update: false } };\n}\n\nreturn { json: {\n  event_id: eventId,\n  user_id: userId,\n  reply: 'Event cancelled',\n  do_update: true,\n  state_version: (parseInt(event.state_version) || 0) + 1,\n  ntfy_topic: event.ntfy_topic\n}};\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "30d310b7-97c9-41ba-ab5b-a2f3d38c472b",
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "name": "Should Update?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json.do_update }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "c0026683-e44b-4a45-95e8-33a4da6b9c59",
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "name": "Write Cancel",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "dataMode": "defineBelow",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [
+            "event_id"
+          ]
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "event_id",
+              "fieldValue": "{{ $json.event_id }}"
+            },
+            {
+              "column": "current_state",
+              "fieldValue": "cancelled"
+            },
+            {
+              "column": "cancel_requested_at",
+              "fieldValue": "{{ $now.toISO() }}"
+            },
+            {
+              "column": "state_version",
+              "fieldValue": "{{ $json.state_version }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "835339b1-b4db-41ba-a676-d40508d4f3c9",
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "name": "Stop Tracking",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/{{ $json.ntfy_topic }}",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "X-Title",
+              "value": "Event Cancelled — Stop Tracking"
+            },
+            {
+              "name": "X-Priority",
+              "value": "2"
+            },
+            {
+              "name": "X-Tags",
+              "value": "stop_sign"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyType": "json",
+        "body": "{\"message\":\"{{ $json.event_id }} cancelled — stop GPS tracking if no other events\",\"extras\":{\"action\":\"stop_tracking\",\"user_id\":\"{{ $json.user_id }}\"}}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ntfy-auth"
+        }
+      },
+      "id": "1e10dce5-a794-414e-8631-6834fa1cbc7e",
+      "position": [
+        250,
+        520
+      ]
+    },
+    {
+      "name": "Reply",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "parameters": {
+        "respondWith": "text",
+        "options": {
+          "responseCode": 200
+        },
+        "responseBody": "{{ $(\"Check State + Cancel\").item.json.reply }}"
+      },
+      "id": "c4311aca-a52b-45b6-baf1-a1fa85b6282b",
+      "position": [
+        470,
+        520
+      ]
+    }
+  ],
+  "connections": {
+    "Cancel Event": {
+      "main": [
+        [
+          {
+            "node": "Read Event Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Event Row": {
+      "main": [
+        [
+          {
+            "node": "Check State + Cancel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check State + Cancel": {
+      "main": [
+        [
+          {
+            "node": "Should Update?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Update?": {
+      "main": [
+        [
+          {
+            "node": "Write Cancel",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write Cancel": {
+      "main": [
+        [
+          {
+            "node": "Stop Tracking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stop Tracking": {
+      "main": [
+        [
+          {
+            "node": "Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": ""
+  }
+}

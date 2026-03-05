@@ -1,0 +1,1585 @@
+{
+  "name": "co-calendar-sync",
+  "active": false,
+  "nodes": [
+    {
+      "name": "Every 30 Min 6AM-10PM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "f87732da-db8c-46a7-893b-29d4a173e849",
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "name": "Read User Config",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "user_config"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "3f0ac89a-e1c3-468f-8e58-8d4f92e552dd",
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "name": "Loop Users",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "cef6a411-948b-49d5-9723-a0dabe23d554",
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "name": "Refresh Calendar Token",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "https://oauth2.googleapis.com/token",
+        "authentication": "none",
+        "options": {},
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "grant_type",
+              "value": "refresh_token"
+            },
+            {
+              "name": "refresh_token",
+              "value": "{{ $(\"Loop Users\").item.json.calendar_refresh_token }}"
+            },
+            {
+              "name": "client_id",
+              "value": "{{ $vars.GOOGLE_CLIENT_ID }}"
+            },
+            {
+              "name": "client_secret",
+              "value": "{{ $vars.GOOGLE_CLIENT_SECRET }}"
+            }
+          ]
+        }
+      },
+      "id": "a9878dca-70ee-43d0-ac32-6ed4e065c09b",
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "name": "Fetch Calendar Events",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+        "authentication": "none",
+        "options": {},
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $json.access_token }}"
+            }
+          ]
+        },
+        "sendQuery": true,
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "timeMin",
+              "value": "{{ $now.startOf('day').toISO() }}"
+            },
+            {
+              "name": "timeMax",
+              "value": "{{ $now.endOf('day').toISO() }}"
+            },
+            {
+              "name": "singleEvents",
+              "value": "true"
+            },
+            {
+              "name": "orderBy",
+              "value": "startTime"
+            }
+          ]
+        }
+      },
+      "id": "cb4acac1-39ba-4975-bb70-93c9a58d3fc7",
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "name": "Read Existing Daily Plan",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "e3b82de9-678d-4464-a181-b634510fa746",
+      "position": [
+        250,
+        520
+      ]
+    },
+    {
+      "name": "Diff Calendar vs Plan",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\nconst calendarEvents = $('Combine Calendar Results').all().map(i => i.json);\nconst planRows = $input.all().map(i => i.json);\nconst user = $('Loop Users').item.json;\nconst today = $now.toFormat('yyyy-MM-dd');\n\n// Build lookups\nconst planByEventId = {};\nfor (const row of planRows) {\n  if (row.user_id === user.user_id && row.plan_date === today) {\n    planByEventId[row.event_id] = row;\n  }\n}\n\nconst calByEventId = {};\nfor (const evt of calendarEvents) {\n  calByEventId[evt.id] = evt;\n}\n\nconst newEvents = [];\nconst changedEvents = [];\nconst deletedEvents = [];\n\n// NEW: in calendar but not in plan\nfor (const evt of calendarEvents) {\n  if (!planByEventId[evt.id]) {\n    newEvents.push(evt);\n  }\n}\n\n// CHANGED: in both, but time or location differ\nfor (const [eventId, evt] of Object.entries(calByEventId)) {\n  const plan = planByEventId[eventId];\n  if (!plan) continue;\n  const terminalStates = ['arrived', 'cancelled', 'skipped', 'expired'];\n  if (terminalStates.includes(plan.current_state)) continue;\n\n  const calStart = evt.start?.dateTime || evt.start?.date;\n  const calLocation = (evt.location || '').trim();\n  const planStart = plan.start_time;\n  const planLocation = (plan.location || '').trim();\n\n  if (calStart !== planStart || calLocation !== planLocation) {\n    changedEvents.push({\n      calendar_event: evt,\n      plan_row: plan,\n      location_changed: calLocation !== planLocation,\n      time_changed: calStart !== planStart\n    });\n  }\n}\n\n// DELETED: in plan but not in calendar\nfor (const [eventId, plan] of Object.entries(planByEventId)) {\n  if (!calByEventId[eventId]) {\n    const terminalStates = ['arrived', 'cancelled', 'skipped', 'expired'];\n    if (!terminalStates.includes(plan.current_state)) {\n      deletedEvents.push(plan);\n    }\n  }\n}\n\nreturn { json: {\n  new_events: newEvents,\n  changed_events: changedEvents,\n  deleted_events: deletedEvents,\n  user_id: user.user_id,\n  ntfy_topic: user.ntfy_topic,\n  has_changes: newEvents.length + changedEvents.length + deletedEvents.length > 0\n}};\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "5a756f8b-c073-405d-8949-f32453e6285a",
+      "position": [
+        470,
+        520
+      ]
+    },
+    {
+      "name": "Any Changes?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json.has_changes }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "94d6ed3f-a449-4977-9afc-05887f22ca67",
+      "position": [
+        690,
+        520
+      ]
+    },
+    {
+      "name": "Process New Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Process each new event through the same pipeline as WF1:\n// 1. Classify (Sub-WF D)\n// 2. If not online: geocode, calculate departure (Sub-WF A), get weather (Sub-WF B)\n// 3. Write to daily_plan\n\nconst data = $json;\nconst newEvents = data.new_events;\n\n// Return new events for processing by subsequent nodes\nreturn newEvents.map(evt => ({ json: {\n  ...evt,\n  user_id: data.user_id,\n  ntfy_topic: data.ntfy_topic,\n  sync_type: 'new'\n}}));\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "01189808-b9b3-4be6-aaa0-5fcc32282047",
+      "position": [
+        910,
+        520
+      ]
+    },
+    {
+      "name": "Loop New Events",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "d2800281-a2ae-465d-872c-593d4ef27fa2",
+      "position": [
+        1130,
+        520
+      ]
+    },
+    {
+      "name": "Classify New Event",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "parameters": {
+        "source": "database",
+        "workflowId": "",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "807c8c4a-93df-46f6-b0fe-742d92bb52e0",
+      "position": [
+        250,
+        740
+      ]
+    },
+    {
+      "name": "Skip This Event?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json.skip }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "5b6d1a04-3cf9-40d9-b6ba-80c1e0fd7866",
+      "position": [
+        470,
+        740
+      ]
+    },
+    {
+      "name": "Online Event?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json.is_online }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "960488e7-21e8-42e1-a3e3-8af8806abf7d",
+      "position": [
+        690,
+        740
+      ]
+    },
+    {
+      "name": "Geocode Location",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "https://maps.googleapis.com/maps/api/geocode/json",
+        "authentication": "none",
+        "options": {},
+        "sendQuery": true,
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "address",
+              "value": "{{ $(\"Loop New Events\").item.json.location }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "",
+          "name": "google-maps-api"
+        }
+      },
+      "id": "022a794d-ae80-4900-a946-b9988efec28f",
+      "position": [
+        910,
+        740
+      ]
+    },
+    {
+      "name": "Determine Origin + At-Home for New Event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Decide origin for this mid-day event:\n// 1. Read latest location_update for user\n// 2. If recent (<2h) and >5km from home → origin = current location, origin_type = \"travel\"\n// 3. Else → origin = HOME_COORDS, origin_type = \"home\"\n// Also compute at_home from latest GPS/WiFi data\n\nconst geocode = $json; // from geocode response\nconst user = $('Loop Users').item.json;\nconst newEvent = $('Loop New Events').item.json;\nconst HOME_COORDS = $vars.HOME_COORDS;\nconst HOME_RADIUS_METERS = parseInt($vars.HOME_RADIUS_METERS) || 200;\nconst [homeLat, homeLng] = HOME_COORDS.split(',').map(Number);\n\n// Extract geocoded coords\nconst geo = geocode.results?.[0]?.geometry?.location;\nconst locationCoords = geo ? `${geo.lat},${geo.lng}` : '';\n\n// Origin determination: WF1 uses a preceding Sheets read + Code node (Node 7/7b) to detect\n// if the user is travelling. WF8 can't do this in a single Code node because n8n Code nodes\n// can't call Google Sheets mid-execution. Adding a separate Sheets read node before this one\n// would work but adds 2 extra nodes per user — marginal benefit since WF4 corrects the origin\n// in real-time as soon as the first GPS update arrives (typically within minutes).\n// Design decision: use HOME_COORDS default; WF4 overrides with actual GPS position.\nconst originCoords = HOME_COORDS;\nconst originType = 'home';\nconst atHome = true; // Conservative default — WF4 corrects in real-time via GPS\n\nconst calStart = newEvent.start?.dateTime || newEvent.start?.date;\nconst calEnd = newEvent.end?.dateTime || newEvent.end?.date;\n\nreturn { json: {\n  event_id: newEvent.id,\n  user_id: user.user_id,\n  plan_date: $now.toFormat('yyyy-MM-dd'),\n  title: newEvent.summary || '(no title)',\n  location: newEvent.location || '',\n  location_coords: locationCoords,\n  start_time: calStart,\n  end_time: calEnd,\n  origin_coords: originCoords,\n  origin_type: originType,\n  at_home: atHome,\n  is_online: false,\n  is_tentative: newEvent.status === 'tentative',\n  ntfy_topic: user.ntfy_topic,\n  _geocode_failed: !geo\n}};\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "adac2496-3d67-4505-a9fe-f5fc57d3709e",
+      "position": [
+        1130,
+        740
+      ]
+    },
+    {
+      "name": "Calculate Departure",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "parameters": {
+        "source": "database",
+        "workflowId": "",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "b29e6ee5-ed69-4b3c-adaf-76dfdebd265b",
+      "position": [
+        250,
+        960
+      ]
+    },
+    {
+      "name": "Get Weather",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "parameters": {
+        "source": "database",
+        "workflowId": "",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "92d13d45-f36e-46a2-a5c9-4f75108486ba",
+      "position": [
+        470,
+        960
+      ]
+    },
+    {
+      "name": "Build New Event Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Merge departure + weather into a complete daily_plan row\nconst eventData = $('Determine Origin + At-Home for New Event').item.json;\nconst departure = $('Calculate Departure').item.json;\nconst weather = $json; // from Sub-WF B\n\nconst depTime = new Date(departure.departure_time || eventData.start_time);\nconst fourAM = new Date(depTime); fourAM.setHours(4, 0, 0, 0);\n\n// Calculate reminder times with dress_cap support\nconst classified = $('Classify New Event').item.json;\nconst dressCap = classified.dress_cap || 0;\nconst ALL_DRESS_INTERVALS = ($vars.DRESS_REMINDER_INTERVALS || '90,60,30,15').split(',').map(Number);\nconst DRESS_INTERVALS = dressCap > 0\n  ? ALL_DRESS_INTERVALS.filter(n => n <= dressCap)\n  : ALL_DRESS_INTERVALS;\nconst maxDressMin = DRESS_INTERVALS.length > 0 ? Math.max(...DRESS_INTERVALS) : 0;\nconst dressedEarliest = maxDressMin > 0\n  ? new Date(depTime.getTime() - maxDressMin * 60 * 1000)\n  : depTime;\nconst remindDressed = dressedEarliest < fourAM ? fourAM.toISOString() : dressedEarliest.toISOString();\n\nreturn { json: {\n  event_id: eventData.event_id,\n  user_id: eventData.user_id,\n  plan_date: eventData.plan_date,\n  title: eventData.title,\n  location: eventData.location,\n  location_coords: eventData.location_coords,\n  start_time: eventData.start_time,\n  end_time: eventData.end_time,\n  origin_coords: eventData.origin_coords,\n  origin_type: eventData.origin_type,\n  at_home: eventData.at_home,\n  is_online: eventData.is_online,\n  is_tentative: eventData.is_tentative,\n  ntfy_topic: eventData.ntfy_topic,\n  dress_cap: dressCap,\n  departure_time: departure.departure_time || '',\n  commute_minutes: departure.commute_minutes || 0,\n  commute_mode: departure.commute_mode || '',\n  weather_worst: weather.weather_worst || '',\n  clothing_advice: weather.clothing_advice || '',\n  remind_dressed: remindDressed,\n  remind_60: new Date(depTime.getTime() - 60 * 60 * 1000).toISOString(),\n  remind_30: new Date(depTime.getTime() - 30 * 60 * 1000).toISOString(),\n  remind_15: new Date(depTime.getTime() - 15 * 60 * 1000).toISOString(),\n  remind_now: departure.departure_time || '',\n  reminders_sent: '',\n  current_state: 'planned',\n  state_version: 0,\n  sync_updated: $now.toISO(),\n  departed_at: '',\n  _departure_within_2h: departure.departure_time\n    ? (new Date(departure.departure_time).getTime() - Date.now()) < 2 * 60 * 60 * 1000\n    : false\n}};\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "e837bf23-64ef-40a3-8116-d0a89fe60563",
+      "position": [
+        690,
+        960
+      ]
+    },
+    {
+      "name": "Build Online Event Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Online events: no commute, no departure time, no weather.\n// Only remind_60 and remind_15 relative to start_time.\nconst user = $('Loop Users').item.json;\nconst newEvent = $('Loop New Events').item.json;\nconst calStart = newEvent.start?.dateTime || newEvent.start?.date;\nconst calEnd = newEvent.end?.dateTime || newEvent.end?.date;\nconst start = new Date(calStart);\n\nconst remind60 = new Date(start.getTime() - 60 * 60 * 1000);\nconst remind15 = new Date(start.getTime() - 15 * 60 * 1000);\n\nreturn { json: {\n  event_id: newEvent.id,\n  user_id: user.user_id,\n  plan_date: $now.toFormat('yyyy-MM-dd'),\n  title: newEvent.summary || '(no title)',\n  location: '',\n  location_coords: '',\n  start_time: calStart,\n  end_time: calEnd,\n  origin_coords: '',\n  origin_type: '',\n  at_home: true,\n  is_online: true,\n  is_tentative: newEvent.status === 'tentative',\n  ntfy_topic: user.ntfy_topic,\n  departure_time: '',\n  commute_minutes: 0,\n  commute_mode: '',\n  weather_worst: '',\n  clothing_advice: '',\n  remind_dressed: '',\n  remind_60: remind60.toISOString(),\n  remind_30: '',\n  remind_15: remind15.toISOString(),\n  remind_now: '',\n  reminders_sent: '',\n  current_state: 'planned',\n  state_version: 0,\n  sync_updated: $now.toISO(),\n  departed_at: '',\n  _departure_within_2h: false\n}};\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "35ba2f55-ff9b-4528-907a-9768ac5028eb",
+      "position": [
+        910,
+        960
+      ]
+    },
+    {
+      "name": "Upsert New Event",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "upsert",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "dataMode": "autoMapInputData",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [
+            "event_id"
+          ]
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "e12a111d-4ae5-4912-af77-00e475d14958",
+      "position": [
+        1130,
+        960
+      ]
+    },
+    {
+      "name": "Departure Within 2 Hours?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json._departure_within_2h }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "f3c32f38-3d71-4309-b955-54bbd7fc88a9",
+      "position": [
+        250,
+        1180
+      ]
+    },
+    {
+      "name": "Alert: New Event Added",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/{{ $json.ntfy_topic }}",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "X-Title",
+              "value": "New Event Added"
+            },
+            {
+              "name": "X-Priority",
+              "value": "3"
+            },
+            {
+              "name": "X-Tags",
+              "value": "calendar"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyType": "raw",
+        "body": "New event: {{ $json.title }} at {{ $json.start_time }}. Depart by {{ $json.departure_time }}."
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ntfy-auth"
+        }
+      },
+      "id": "8d5bb82c-8676-409d-89b3-7a1c148a0f4d",
+      "position": [
+        470,
+        1180
+      ]
+    },
+    {
+      "name": "Process Changed Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\nconst data = $('Diff Calendar vs Plan').item.json;\nconst changes = data.changed_events;\n\nif (changes.length === 0) {\n  return [{ json: { _no_changes: true } }];\n}\n\nreturn changes.map(c => ({ json: {\n  ...c.plan_row,\n  new_start_time: c.calendar_event.start?.dateTime || c.calendar_event.start?.date,\n  new_end_time: c.calendar_event.end?.dateTime || c.calendar_event.end?.date,\n  new_location: (c.calendar_event.location || '').trim(),\n  location_changed: c.location_changed,\n  time_changed: c.time_changed,\n  ntfy_topic: $('Diff Calendar vs Plan').item.json.ntfy_topic,\n  sync_type: 'changed'\n}}));\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "ecc998a3-baca-4d75-86a0-a08f79500dda",
+      "position": [
+        690,
+        1180
+      ]
+    },
+    {
+      "name": "Loop Changed Events",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "8d451725-8eeb-4a71-ac60-aca9be4a728c",
+      "position": [
+        910,
+        1180
+      ]
+    },
+    {
+      "name": "Location Changed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json.location_changed }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "edd07452-8038-4da9-9925-4019d4c1c64f",
+      "position": [
+        1130,
+        1180
+      ]
+    },
+    {
+      "name": "Re-Geocode Changed Location",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "https://maps.googleapis.com/maps/api/geocode/json",
+        "authentication": "none",
+        "options": {},
+        "sendQuery": true,
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "address",
+              "value": "{{ $(\"Loop Changed Events\").item.json.new_location }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "",
+          "name": "google-maps-api"
+        }
+      },
+      "id": "adf46cd5-d882-41ed-9696-c9328479e5fc",
+      "position": [
+        250,
+        1400
+      ]
+    },
+    {
+      "name": "Recalculate Departure",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "parameters": {
+        "source": "database",
+        "workflowId": "",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "01664ed9-ddb4-4973-af63-c24b922b6373",
+      "position": [
+        470,
+        1400
+      ]
+    },
+    {
+      "name": "Recalculate Weather",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "parameters": {
+        "source": "database",
+        "workflowId": "",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "189d9442-9926-42f4-9ff7-e7a63fa787d5",
+      "position": [
+        690,
+        1400
+      ]
+    },
+    {
+      "name": "Build Update Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Recalculate departure and reminders based on what changed\nconst row = $('Loop Changed Events').item.json;\nconst locationChanged = row.location_changed;\nconst newStart = row.new_start_time;\nconst newEnd = row.new_end_time;\n\nlet depTime, commuteMin, commuteMode, locationCoords, weatherWorst, clothingAdvice;\n\nif (locationChanged) {\n  // Full recalculation happened via Sub-WF A + B\n  const departure = $('Recalculate Departure').item.json;\n  const weather = $('Recalculate Weather').item.json;\n  const geocode = $('Re-Geocode Changed Location').item.json;\n  const geo = geocode.results?.[0]?.geometry?.location;\n  locationCoords = geo ? `${geo.lat},${geo.lng}` : row.location_coords;\n  depTime = new Date(departure.departure_time);\n  commuteMin = departure.commute_minutes;\n  commuteMode = departure.commute_mode;\n  weatherWorst = weather.weather_worst || '';\n  clothingAdvice = weather.clothing_advice || '';\n} else {\n  // Time-only change: recalculate departure from existing commute_minutes\n  locationCoords = row.location_coords;\n  commuteMin = parseInt(row.commute_minutes) || 0;\n  commuteMode = row.commute_mode || '';\n  depTime = new Date(new Date(newStart).getTime() - commuteMin * 60000 - 15 * 60000); // buffer\n  weatherWorst = row.weather_worst || '';\n  clothingAdvice = row.clothing_advice || '';\n}\n\nconst fourAM = new Date(depTime); fourAM.setHours(4, 0, 0, 0);\n\n// Preserve dress_cap from existing row (set by Sub-WF D during initial classification)\nconst dressCap = parseInt(row.dress_cap) || 0;\nconst ALL_DRESS_INTERVALS = ($vars.DRESS_REMINDER_INTERVALS || '90,60,30,15').split(',').map(Number);\nconst DRESS_INTERVALS = dressCap > 0\n  ? ALL_DRESS_INTERVALS.filter(n => n <= dressCap)\n  : ALL_DRESS_INTERVALS;\nconst maxDressMin = DRESS_INTERVALS.length > 0 ? Math.max(...DRESS_INTERVALS) : 0;\nconst dressedEarliest = maxDressMin > 0\n  ? new Date(depTime.getTime() - maxDressMin * 60 * 1000)\n  : depTime;\nconst remindDressed = dressedEarliest < fourAM ? fourAM.toISOString() : dressedEarliest.toISOString();\n\nconst oldDep = new Date(row.departure_time);\nconst diffMin = Math.round((oldDep.getTime() - depTime.getTime()) / 60000); // positive = moved earlier\n\nreturn { json: {\n  event_id: row.event_id,\n  start_time: newStart,\n  end_time: newEnd,\n  location: locationChanged ? row.new_location : row.location,\n  location_coords: locationCoords,\n  departure_time: depTime.toISOString(),\n  commute_minutes: commuteMin,\n  commute_mode: commuteMode,\n  weather_worst: weatherWorst,\n  clothing_advice: clothingAdvice,\n  remind_dressed: remindDressed,\n  remind_60: new Date(depTime.getTime() - 60 * 60 * 1000).toISOString(),\n  remind_30: new Date(depTime.getTime() - 30 * 60 * 1000).toISOString(),\n  remind_15: new Date(depTime.getTime() - 15 * 60 * 1000).toISOString(),\n  remind_now: depTime.toISOString(),\n  state_version: (parseInt(row.state_version) || 0) + 1,\n  sync_updated: $now.toISO(),\n  ntfy_topic: row.ntfy_topic,\n  title: row.title,\n  _diff_minutes: diffMin,\n  _moved_earlier_15: diffMin > 15\n}};\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "8a10ba91-6ee8-4759-94eb-c6307448c5ae",
+      "position": [
+        910,
+        1400
+      ]
+    },
+    {
+      "name": "Update Changed Event",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "dataMode": "autoMapInputData",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [
+            "event_id"
+          ]
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "start_time",
+              "fieldValue": "{{ $json.start_time }}"
+            },
+            {
+              "column": "end_time",
+              "fieldValue": "{{ $json.end_time }}"
+            },
+            {
+              "column": "location",
+              "fieldValue": "{{ $json.location }}"
+            },
+            {
+              "column": "location_coords",
+              "fieldValue": "{{ $json.location_coords }}"
+            },
+            {
+              "column": "departure_time",
+              "fieldValue": "{{ $json.departure_time }}"
+            },
+            {
+              "column": "commute_minutes",
+              "fieldValue": "{{ $json.commute_minutes }}"
+            },
+            {
+              "column": "commute_mode",
+              "fieldValue": "{{ $json.commute_mode }}"
+            },
+            {
+              "column": "weather_worst",
+              "fieldValue": "{{ $json.weather_worst }}"
+            },
+            {
+              "column": "clothing_advice",
+              "fieldValue": "{{ $json.clothing_advice }}"
+            },
+            {
+              "column": "remind_dressed",
+              "fieldValue": "{{ $json.remind_dressed }}"
+            },
+            {
+              "column": "remind_60",
+              "fieldValue": "{{ $json.remind_60 }}"
+            },
+            {
+              "column": "remind_30",
+              "fieldValue": "{{ $json.remind_30 }}"
+            },
+            {
+              "column": "remind_15",
+              "fieldValue": "{{ $json.remind_15 }}"
+            },
+            {
+              "column": "remind_now",
+              "fieldValue": "{{ $json.remind_now }}"
+            },
+            {
+              "column": "state_version",
+              "fieldValue": "{{ $json.state_version }}"
+            },
+            {
+              "column": "sync_updated",
+              "fieldValue": "{{ $json.sync_updated }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "d9547d27-9c92-4c2f-b785-58b76a949ba5",
+      "position": [
+        1130,
+        1400
+      ]
+    },
+    {
+      "name": "Departure Changed Significantly?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json._diff_minutes }}",
+              "rightValue": "0",
+              "operation": {
+                "type": "string",
+                "operation": "notEqual",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "e67109f8-8a89-4ead-9165-1612ea0cf49f",
+      "position": [
+        250,
+        1620
+      ]
+    },
+    {
+      "name": "Alert: Event Updated",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/{{ $json.ntfy_topic }}",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "X-Title",
+              "value": "{{ $json._moved_earlier_15 ? \"⏰ Event Moved Earlier\" : \"Event Updated\" }}"
+            },
+            {
+              "name": "X-Priority",
+              "value": "{{ $json._moved_earlier_15 ? \"4\" : \"3\" }}"
+            },
+            {
+              "name": "X-Tags",
+              "value": "calendar"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyType": "raw",
+        "body": "{{ $json.title }} updated. New departure: {{ $json.departure_time }} ({{ Math.abs($json._diff_minutes) }} min {{ $json._diff_minutes > 0 ? \"earlier\" : \"later\" }})."
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ntfy-auth"
+        }
+      },
+      "id": "9a7d0522-e6b9-4737-b552-5d2dc62c8855",
+      "position": [
+        470,
+        1620
+      ]
+    },
+    {
+      "name": "Process Deleted Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\nconst data = $('Diff Calendar vs Plan').item.json;\nconst deleted = data.deleted_events;\n\nif (deleted.length === 0) {\n  return [{ json: { _no_deletions: true } }];\n}\n\nconst now = new Date();\nconst sixtyMinAgo = new Date(now.getTime() - 60 * 60 * 1000);\n\nreturn deleted.map(row => {\n  // Consent-safety: if user recently cancelled, honor that over \"skipped\"\n  const useCancelled = row.cancel_requested_at\n    && new Date(row.cancel_requested_at) > sixtyMinAgo;\n\n  return { json: {\n    ...row,\n    new_state: useCancelled ? 'cancelled' : 'skipped',\n    state_version: (parseInt(row.state_version) || 0) + 1,\n    sync_type: 'deleted'\n  }};\n});\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "61db5b7d-e01a-44d0-82e7-290eca7e377e",
+      "position": [
+        690,
+        1620
+      ]
+    },
+    {
+      "name": "Loop Deleted Events",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "6eaac1eb-d2e7-46a9-a65b-7ac67f1ebfac",
+      "position": [
+        910,
+        1620
+      ]
+    },
+    {
+      "name": "Mark Event Skipped/Cancelled",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "dataMode": "autoMapInputData",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [
+            "event_id"
+          ]
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "current_state",
+              "fieldValue": "{{ $json.new_state }}"
+            },
+            {
+              "column": "state_version",
+              "fieldValue": "{{ $json.state_version }}"
+            },
+            {
+              "column": "sync_updated",
+              "fieldValue": "{{ $now.toISO() }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "5e1e76a3-aa20-4202-ab0e-0067bad918c9",
+      "position": [
+        1130,
+        1620
+      ]
+    },
+    {
+      "name": "Alert: Event Removed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/{{ $json.ntfy_topic }}",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "X-Title",
+              "value": "Event Removed"
+            },
+            {
+              "name": "X-Priority",
+              "value": "3"
+            },
+            {
+              "name": "X-Tags",
+              "value": "calendar"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyType": "raw",
+        "body": "{{ $json.title }} removed from calendar. Reminders cancelled."
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ntfy-auth"
+        }
+      },
+      "id": "6d76856e-5c59-452d-935d-057616e5f62c",
+      "position": [
+        250,
+        1840
+      ]
+    },
+    {
+      "name": "Check If Tracking Should Stop",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// After processing all deletions, check if this user has any remaining non-terminal events\nconst data = $('Diff Calendar vs Plan').item.json;\nconst planRows = $('Read Existing Daily Plan').all().map(i => i.json);\nconst userId = data.user_id;\nconst today = $now.toFormat('yyyy-MM-dd');\nconst terminalStates = ['arrived', 'cancelled', 'skipped', 'expired'];\n\nconst remaining = planRows.filter(r =>\n  r.user_id === userId\n  && r.plan_date === today\n  && !terminalStates.includes(r.current_state)\n  && r.is_online !== 'TRUE'\n);\n\n// Account for events we just deleted/skipped in this run\nconst deletedIds = new Set(data.deleted_events.map(e => e.event_id));\nconst reallyRemaining = remaining.filter(r => !deletedIds.has(r.event_id));\n\nreturn { json: {\n  should_stop_tracking: reallyRemaining.length === 0,\n  ntfy_topic: data.ntfy_topic,\n  user_id: userId\n}};\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "46d9b47c-3c64-4787-8aa6-e1dd839ecb3a",
+      "position": [
+        470,
+        1840
+      ]
+    },
+    {
+      "name": "Stop Tracking?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json.should_stop_tracking }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "70630664-ecde-4c00-8649-f05c70b8156a",
+      "position": [
+        690,
+        1840
+      ]
+    },
+    {
+      "name": "Send Stop Tracking",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/{{ $json.ntfy_topic }}",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "X-Title",
+              "value": "Stop GPS Tracking"
+            },
+            {
+              "name": "X-Priority",
+              "value": "2"
+            },
+            {
+              "name": "X-Tags",
+              "value": "stop_sign"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyType": "json",
+        "body": "{\"message\":\"All events removed — stopping GPS tracking\",\"extras\":{\"action\":\"stop_tracking\",\"user_id\":\"{{ $json.user_id }}\"}}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ntfy-auth"
+        }
+      },
+      "id": "a5bd8507-cf2a-4ec0-829a-dfcd6fe71acf",
+      "position": [
+        910,
+        1840
+      ]
+    }
+  ],
+  "connections": {
+    "Every 30 Min 6AM-10PM": {
+      "main": [
+        [
+          {
+            "node": "Read User Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read User Config": {
+      "main": [
+        [
+          {
+            "node": "Loop Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Users": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Refresh Calendar Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh Calendar Token": {
+      "main": [
+        [
+          {
+            "node": "Fetch Calendar Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Calendar Events": {
+      "main": [
+        [
+          {
+            "node": "Read Existing Daily Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Existing Daily Plan": {
+      "main": [
+        [
+          {
+            "node": "Diff Calendar vs Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Diff Calendar vs Plan": {
+      "main": [
+        [
+          {
+            "node": "Any Changes?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Changes?": {
+      "main": [
+        [
+          {
+            "node": "Process New Events",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process New Events": {
+      "main": [
+        [
+          {
+            "node": "Loop New Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop New Events": {
+      "main": [
+        [
+          {
+            "node": "Process Changed Events",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Classify New Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify New Event": {
+      "main": [
+        [
+          {
+            "node": "Skip This Event?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Skip This Event?": {
+      "main": [
+        [
+          {
+            "node": "Loop New Events",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Online Event?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Online Event?": {
+      "main": [
+        [
+          {
+            "node": "Build Online Event Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Geocode Location",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Geocode Location": {
+      "main": [
+        [
+          {
+            "node": "Determine Origin + At-Home for New Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Determine Origin + At-Home for New Event": {
+      "main": [
+        [
+          {
+            "node": "Calculate Departure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Departure": {
+      "main": [
+        [
+          {
+            "node": "Get Weather",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Weather": {
+      "main": [
+        [
+          {
+            "node": "Build New Event Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build New Event Row": {
+      "main": [
+        [
+          {
+            "node": "Upsert New Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Online Event Row": {
+      "main": [
+        [
+          {
+            "node": "Upsert New Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upsert New Event": {
+      "main": [
+        [
+          {
+            "node": "Departure Within 2 Hours?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Departure Within 2 Hours?": {
+      "main": [
+        [
+          {
+            "node": "Alert: New Event Added",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop New Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert: New Event Added": {
+      "main": [
+        [
+          {
+            "node": "Loop New Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Changed Events": {
+      "main": [
+        [
+          {
+            "node": "Loop Changed Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Changed Events": {
+      "main": [
+        [
+          {
+            "node": "Process Deleted Events",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Location Changed?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Location Changed?": {
+      "main": [
+        [
+          {
+            "node": "Re-Geocode Changed Location",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Update Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Re-Geocode Changed Location": {
+      "main": [
+        [
+          {
+            "node": "Recalculate Departure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recalculate Departure": {
+      "main": [
+        [
+          {
+            "node": "Recalculate Weather",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recalculate Weather": {
+      "main": [
+        [
+          {
+            "node": "Build Update Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Update Row": {
+      "main": [
+        [
+          {
+            "node": "Update Changed Event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Changed Event": {
+      "main": [
+        [
+          {
+            "node": "Departure Changed Significantly?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Departure Changed Significantly?": {
+      "main": [
+        [
+          {
+            "node": "Alert: Event Updated",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Changed Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert: Event Updated": {
+      "main": [
+        [
+          {
+            "node": "Loop Changed Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Process Deleted Events": {
+      "main": [
+        [
+          {
+            "node": "Loop Deleted Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Deleted Events": {
+      "main": [
+        [
+          {
+            "node": "Check If Tracking Should Stop",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Mark Event Skipped/Cancelled",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Event Skipped/Cancelled": {
+      "main": [
+        [
+          {
+            "node": "Alert: Event Removed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert: Event Removed": {
+      "main": [
+        [
+          {
+            "node": "Loop Deleted Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check If Tracking Should Stop": {
+      "main": [
+        [
+          {
+            "node": "Stop Tracking?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Stop Tracking?": {
+      "main": [
+        [
+          {
+            "node": "Send Stop Tracking",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Stop Tracking": {
+      "main": [
+        [
+          {
+            "node": "Loop Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": ""
+  }
+}

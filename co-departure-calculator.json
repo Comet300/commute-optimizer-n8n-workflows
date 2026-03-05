@@ -1,0 +1,383 @@
+{
+  "name": "co-departure-calculator",
+  "active": false,
+  "nodes": [
+    {
+      "name": "Input",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "parameters": {},
+      "id": "1c64e5c7-df07-4098-a1ab-6ac7be1add49",
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "name": "Prepare API Params",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Convert event_start to Unix timestamp for departure_time parameter\n// Google Maps expects seconds since epoch for future departure times\nconst eventStart = new Date($json.event_start);\nconst departureUnix = Math.floor(eventStart.getTime() / 1000);\n\nreturn { json: {\n  origin: $json.origin,\n  destination: $json.destination,\n  event_start: $json.event_start,\n  force_car_mode: $json.force_car_mode,\n  departure_time_unix: departureUnix\n}};\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "cada5fa5-1457-402e-be0e-807f711d3967",
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "name": "Get Transit Time",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "https://maps.googleapis.com/maps/api/distancematrix/json",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "origins",
+              "value": "{{ $(\"Prepare API Params\").item.json.origin }}"
+            },
+            {
+              "name": "destinations",
+              "value": "{{ $(\"Prepare API Params\").item.json.destination }}"
+            },
+            {
+              "name": "mode",
+              "value": "transit"
+            },
+            {
+              "name": "departure_time",
+              "value": "{{ $(\"Prepare API Params\").item.json.departure_time_unix }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "",
+          "name": "google-maps-api"
+        }
+      },
+      "id": "0931d653-e817-4940-8687-96a756a9105a",
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "name": "Get Driving Time",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "https://maps.googleapis.com/maps/api/distancematrix/json",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "origins",
+              "value": "{{ $(\"Prepare API Params\").item.json.origin }}"
+            },
+            {
+              "name": "destinations",
+              "value": "{{ $(\"Prepare API Params\").item.json.destination }}"
+            },
+            {
+              "name": "mode",
+              "value": "driving"
+            },
+            {
+              "name": "departure_time",
+              "value": "{{ $(\"Prepare API Params\").item.json.departure_time_unix }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "",
+          "name": "google-maps-api"
+        }
+      },
+      "id": "f0b7b6f0-97d2-43a3-8bc5-70ccd1258b27",
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "name": "Get Walking Time",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "https://maps.googleapis.com/maps/api/distancematrix/json",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpQueryAuth",
+        "sendQuery": true,
+        "queryParametersUi": {
+          "parameter": [
+            {
+              "name": "origins",
+              "value": "{{ $(\"Prepare API Params\").item.json.origin }}"
+            },
+            {
+              "name": "destinations",
+              "value": "{{ $(\"Prepare API Params\").item.json.destination }}"
+            },
+            {
+              "name": "mode",
+              "value": "walking"
+            },
+            {
+              "name": "departure_time",
+              "value": "{{ $(\"Prepare API Params\").item.json.departure_time_unix }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "httpQueryAuth": {
+          "id": "",
+          "name": "google-maps-api"
+        }
+      },
+      "id": "c8636b26-5a84-4b49-979a-72b04eba5bdc",
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "name": "Tag Transit",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "parameters": {
+        "mode": "manual",
+        "options": {
+          "include": "all"
+        },
+        "assignments": {
+          "assignments": [
+            {
+              "id": "0",
+              "name": "transport_mode",
+              "value": "transit",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "3c7fd098-4227-4ee2-abb8-84710063a52f",
+      "position": [
+        250,
+        520
+      ]
+    },
+    {
+      "name": "Tag Driving",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "parameters": {
+        "mode": "manual",
+        "options": {
+          "include": "all"
+        },
+        "assignments": {
+          "assignments": [
+            {
+              "id": "0",
+              "name": "transport_mode",
+              "value": "driving",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "964c5ee9-dda8-4fb2-a9c7-3f737f3f4f5d",
+      "position": [
+        470,
+        520
+      ]
+    },
+    {
+      "name": "Tag Walking",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "parameters": {
+        "mode": "manual",
+        "options": {
+          "include": "all"
+        },
+        "assignments": {
+          "assignments": [
+            {
+              "id": "0",
+              "name": "transport_mode",
+              "value": "walking",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "id": "c651d79a-3e60-4c4c-9b50-695f4edb40da",
+      "position": [
+        690,
+        520
+      ]
+    },
+    {
+      "name": "Combine Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "parameters": {
+        "mode": "append",
+        "options": {}
+      },
+      "id": "218291df-6d2a-43ea-bda2-fbb260540b66",
+      "position": [
+        910,
+        520
+      ]
+    },
+    {
+      "name": "Compare Modes + Calculate Departure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Parse the three API responses — identify by transport_mode tag (not array index)\nconst items = $input.all();\n\nfunction parseResponse(item) {\n  const data = item.json;\n  // Defensive check: ensure response data structure exists\n  if (!data || !data.rows || !data.rows[0] || !data.rows[0].elements || !data.rows[0].elements[0]) {\n    return null;\n  }\n  if (data.status !== 'OK') return null;\n  const el = data.rows[0].elements[0];\n  if (!el || el.status !== 'OK' || !el.duration || !el.distance) return null;\n  return {\n    duration_sec: el.duration.value,\n    duration_text: el.duration.text,\n    distance_m: el.distance.value\n  };\n}\n\n// Find items by their transport_mode tag instead of relying on Merge ordering\nconst transitItem = items.find(i => i.json.transport_mode === 'transit');\nconst drivingItem = items.find(i => i.json.transport_mode === 'driving');\nconst walkingItem = items.find(i => i.json.transport_mode === 'walking');\n\nconst transit = transitItem ? parseResponse(transitItem) : null;\nconst driving = drivingItem ? parseResponse(drivingItem) : null;\nconst walking = walkingItem ? parseResponse(walkingItem) : null;\n\nconst eventStart = new Date($('Prepare API Params').item.json.event_start);\nconst forceCar = $('Prepare API Params').item.json.force_car_mode;\n\n// Walking: only consider if under 20 minutes\nconst walkingViable = walking && walking.duration_sec < 20 * 60;\n\n// Rideshare = driving + 10 min wait\nconst rideshare = driving ? { ...driving, duration_sec: driving.duration_sec + 10 * 60 } : null;\n\n// Select mode\nlet bestMode, bestDuration;\n\nif (forceCar) {\n  // Pick faster: driving vs rideshare (rideshare is always slower, so pick driving)\n  bestMode = 'driving';\n  bestDuration = driving ? driving.duration_sec : null;\n} else {\n  // Pick shortest: transit vs walking (if viable)\n  const options = [];\n  if (transit) options.push({ mode: 'transit', sec: transit.duration_sec });\n  if (walkingViable) options.push({ mode: 'walking', sec: walking.duration_sec });\n  if (driving) options.push({ mode: 'driving', sec: driving.duration_sec });\n\n  if (options.length === 0) {\n    return { json: { error: true, message: 'unable to determine commute time' } };\n  }\n\n  options.sort((a, b) => a.sec - b.sec);\n  bestMode = options[0].mode;\n  bestDuration = options[0].sec;\n}\n\nif (!bestDuration) {\n  return { json: { error: true, message: 'unable to determine commute time' } };\n}\n\n// Add buffers\nlet bufferMin;\nif (bestMode === 'driving' || bestMode === 'rideshare') {\n  bufferMin = 10 + 7 + 5; // 10 min parking + 7 min reliability + 5 min leaving\n} else {\n  bufferMin = 7 + 5; // 7 min reliability + 5 min leaving\n}\n\nconst totalMin = Math.round(bestDuration / 60) + bufferMin;\nconst departureTime = new Date(eventStart.getTime() - totalMin * 60 * 1000);\n\nreturn { json: {\n  error: false,\n  departure_time: departureTime.toISOString(),\n  commute_minutes: totalMin,\n  commute_mode: bestMode,\n  mode_comparison: {\n    transit: transit ? Math.round(transit.duration_sec / 60) + ' min' : 'unavailable',\n    driving: driving ? Math.round(driving.duration_sec / 60) + ' min' : 'unavailable',\n    walking: walking ? Math.round(walking.duration_sec / 60) + ' min' : 'unavailable'\n  }\n}};\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "6e42e8ce-7cdc-493c-9f7b-f6a2c3b59964",
+      "position": [
+        1130,
+        520
+      ]
+    }
+  ],
+  "connections": {
+    "Input": {
+      "main": [
+        [
+          {
+            "node": "Prepare API Params",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare API Params": {
+      "main": [
+        [
+          {
+            "node": "Get Transit Time",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Driving Time",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Get Walking Time",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Transit Time": {
+      "main": [
+        [
+          {
+            "node": "Tag Transit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Driving Time": {
+      "main": [
+        [
+          {
+            "node": "Tag Driving",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Walking Time": {
+      "main": [
+        [
+          {
+            "node": "Tag Walking",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Transit": {
+      "main": [
+        [
+          {
+            "node": "Combine Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Driving": {
+      "main": [
+        [
+          {
+            "node": "Combine Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tag Walking": {
+      "main": [
+        [
+          {
+            "node": "Combine Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Combine Results": {
+      "main": [
+        [
+          {
+            "node": "Compare Modes + Calculate Departure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": ""
+  }
+}

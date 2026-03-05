@@ -1,0 +1,495 @@
+{
+  "name": "co-heartbeat",
+  "active": false,
+  "nodes": [
+    {
+      "name": "Every 30 Min 4AM-Midnight",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 30
+            }
+          ]
+        }
+      },
+      "id": "a4d67013-7b1d-4aac-8033-c88c5195db95",
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "name": "Check Sheets Access",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "user_config"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "continueOnFail": true,
+      "id": "3ec518d6-50c1-42f9-86a3-f3c98e4083d5",
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "name": "Check ntfy Access",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/system-errors",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "Authorization",
+              "value": "Bearer YOUR_TOKEN"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyType": "raw",
+        "body": "heartbeat ping"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ntfy-auth"
+        }
+      },
+      "continueOnFail": true,
+      "id": "d4964e89-d714-49a3-9414-f095e78e4120",
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "name": "Check Daily Plan",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "continueOnFail": true,
+      "id": "11e449c9-c2e9-41f0-af1d-90d823d2e21c",
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "name": "Evaluate Health",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// Check results from all parallel health checks\nconst now = new Date();\nconst hour = now.getHours();\n\n// Check Sheets access\nconst sheetsResult = $('Check Sheets Access').item.json;\nconst sheets_ok = !sheetsResult?.error;\n\n// Check ntfy access\nconst ntfyResult = $('Check ntfy Access').item.json;\nconst ntfy_ok = !ntfyResult?.error;\n\n// Check if daily_plan has entries for today (only check after 5 AM)\nlet planning_ok = true;\nif (hour >= 5) {\n  const today = DateTime.now().setZone('Europe/Bucharest').toISODate(); // timezone-aware\n  const planItems = $('Check Daily Plan').all().map(i => i.json);\n  const todayItems = planItems.filter(i => i.plan_date === today);\n  if (todayItems.length === 0) {\n    planning_ok = false;\n  }\n}\n\n// Check last_cleanup_at (from user_config)\nlet cleanup_ok = true;\nif (sheetsResult && !sheetsResult.error) {\n  const lastCleanup = sheetsResult.last_cleanup_at;\n  if (!lastCleanup) {\n    cleanup_ok = false;\n  } else {\n    const cleanupTime = new Date(lastCleanup);\n    const fortyEightHoursAgo = new Date(now.getTime() - 48 * 60 * 60 * 1000);\n    if (cleanupTime < fortyEightHoursAgo) {\n      cleanup_ok = false;\n    }\n  }\n}\n\n// Build alert details\nconst failures = [];\nif (!sheets_ok) failures.push('Google Sheets unreachable');\nif (!ntfy_ok) failures.push('ntfy unreachable');\nif (!planning_ok) failures.push('No events planned today (WF1 may have failed)');\nif (!cleanup_ok) failures.push('Data retention cleanup overdue — GPS data may exceed 7-day policy. Run WF5a manually.');\n\n// Should WF1 be re-triggered? (catch-up after missed cron)\nconst should_retrigger_wf1 = !planning_ok && hour >= 5 && hour <= 9;\n\n// Is it 8 AM? (daily OK notification)\nconst is_daily_summary = (hour === 8 && now.getMinutes() < 30);\n\nreturn { json: {\n  all_ok: failures.length === 0,\n  failures: failures,\n  failure_text: failures.join('; '),\n  should_retrigger_wf1: should_retrigger_wf1,\n  is_daily_summary: is_daily_summary\n}};\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "00d67c01-a6e6-4f5d-9508-6707ae30a444",
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "name": "Should Re-trigger?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json.should_retrigger_wf1 }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "db6c82d3-63ee-462e-b1ff-eeb38915d468",
+      "position": [
+        250,
+        520
+      ]
+    },
+    {
+      "name": "Catch-up Planning",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "parameters": {
+        "source": "database",
+        "workflowId": "",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "7c9685ff-86cf-46c8-9c71-8746ea77c9dd",
+      "position": [
+        470,
+        520
+      ]
+    },
+    {
+      "name": "Any Failures?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $json.all_ok }}",
+              "rightValue": "false",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "07046d64-1b33-4223-ac35-15529de217e7",
+      "position": [
+        690,
+        520
+      ]
+    },
+    {
+      "name": "Send Failure Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/system-errors",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "X-Title",
+              "value": "Health Check Failed"
+            },
+            {
+              "name": "X-Priority",
+              "value": "4"
+            },
+            {
+              "name": "X-Tags",
+              "value": "warning"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyType": "raw",
+        "body": "Health check failed: {{ $(\"Evaluate Health\").item.json.failure_text }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ntfy-auth"
+        }
+      },
+      "id": "bdeede2c-12fd-4a90-9048-ecfdf31814c3",
+      "position": [
+        910,
+        520
+      ]
+    },
+    {
+      "name": "Ping Dead Man's Switch",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "GET",
+        "url": "https://hc-ping.com/YOUR_CHECK_UUID",
+        "authentication": "none",
+        "options": {}
+      },
+      "continueOnFail": true,
+      "id": "326efecb-2092-4d2d-812d-4007498212c2",
+      "position": [
+        1130,
+        520
+      ]
+    },
+    {
+      "name": "Is Daily Summary Time?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $(\"Evaluate Health\").item.json.is_daily_summary }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "ff563fe7-6a7c-481a-818d-187514b59feb",
+      "position": [
+        250,
+        740
+      ]
+    },
+    {
+      "name": "Send System OK",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:8080/commute-alerts",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "X-Title",
+              "value": "System Health: OK"
+            },
+            {
+              "name": "X-Priority",
+              "value": "2"
+            },
+            {
+              "name": "X-Tags",
+              "value": "white_check_mark"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyType": "raw",
+        "body": "All systems operational. Heartbeat running normally."
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ntfy-auth"
+        }
+      },
+      "id": "b23be8ec-7dc3-4e8a-acfb-747d6708b167",
+      "position": [
+        470,
+        740
+      ]
+    }
+  ],
+  "connections": {
+    "Every 30 Min 4AM-Midnight": {
+      "main": [
+        [
+          {
+            "node": "Check Sheets Access",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check ntfy Access",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check Daily Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Sheets Access": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Health",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check ntfy Access": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Health",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Check Daily Plan": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Health",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Evaluate Health": {
+      "main": [
+        [
+          {
+            "node": "Should Re-trigger?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Re-trigger?": {
+      "main": [
+        [
+          {
+            "node": "Catch-up Planning",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Any Failures?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Catch-up Planning": {
+      "main": [
+        [
+          {
+            "node": "Any Failures?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Failures?": {
+      "main": [
+        [
+          {
+            "node": "Send Failure Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ping Dead Man's Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Failure Alert": {
+      "main": [
+        [
+          {
+            "node": "Ping Dead Man's Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ping Dead Man's Switch": {
+      "main": [
+        [
+          {
+            "node": "Is Daily Summary Time?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Daily Summary Time?": {
+      "main": [
+        [
+          {
+            "node": "Send System OK",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": ""
+  }
+}

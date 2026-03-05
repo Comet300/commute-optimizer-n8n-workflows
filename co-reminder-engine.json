@@ -1,0 +1,337 @@
+{
+  "name": "co-reminder-engine",
+  "active": false,
+  "nodes": [
+    {
+      "name": "Every 5 Min 4AM-Midnight",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      },
+      "id": "260d25d9-27f1-4e48-9890-3a43bdfb8a01",
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "name": "Read Daily Plan",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "aef38842-9ff1-419e-9384-8faa6c2b86b4",
+      "position": [
+        470,
+        300
+      ]
+    },
+    {
+      "name": "Find Due Reminders",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// --- Required n8n Variables check ---\nif (!$vars.DRESS_REMINDER_INTERVALS) {\n  throw new Error('Missing n8n Variable: DRESS_REMINDER_INTERVALS. Set it in Settings → Variables before activating workflows.');\n}\n\n// Find reminders that are due within the last 5-minute window\nconst now = new Date();\nconst fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000);\nconst fourAM = new Date(now);\nfourAM.setHours(4, 0, 0, 0);\nconst items = $input.all();\nconst dueReminders = [];\nconst terminalStates = ['cancelled', 'skipped', 'arrived', 'expired', 'departed'];\nconst today = DateTime.now().setZone('Europe/Bucharest').toISODate(); // YYYY-MM-DD, timezone-aware\n\n// Configurable dressed reminder intervals (minutes before departure, descending order)\nconst ALL_DRESS_INTERVALS = $vars.DRESS_REMINDER_INTERVALS.split(',').map(s => s.trim()).filter(Boolean).map(Number).filter(n => !isNaN(n)); // e.g. \"90,60,30,15\" → [90, 60, 30, 15]\n\nfor (const item of items) {\n  const row = item.json;\n\n  // Skip terminal states\n  if (terminalStates.includes(row.current_state)) continue;\n\n  // Skip past events (end_time < now)\n  if (new Date(row.end_time) < now) continue;\n\n  // Skip if not today\n  if (row.plan_date !== today) continue;\n\n  // Parse already-sent reminders\n  const sent = (row.reminders_sent || '').split(',').map(s => s.trim());\n\n  // Determine effective departure time (traffic-updated if available)\n  const effectiveDep = row.traffic_updated_departure || row.departure_time;\n  const depTime = new Date(effectiveDep);\n\n  // Build standard reminder checks (non-dressed)\n  const reminderChecks = [\n    { type: 'remind_60', time: new Date(depTime.getTime() - 60 * 60 * 1000), channels: ['push'] },\n    { type: 'remind_30', time: new Date(depTime.getTime() - 30 * 60 * 1000), channels: ['push'] },\n    { type: 'remind_15', time: new Date(depTime.getTime() - 15 * 60 * 1000), channels: ['push'] },\n    { type: 'remind_now', time: depTime, channels: ['push', 'tts'] }\n  ];\n\n  // \"Get dressed\" reminders — only if user is at home for this event\n  // Apply dress_cap: if event has [dress:N] or [N] tag, only fire intervals ≤ N\n  const dressCap = parseInt(row.dress_cap, 10) || 0;\n  const DRESS_INTERVALS = dressCap > 0\n    ? ALL_DRESS_INTERVALS.filter(n => n <= dressCap)\n    : ALL_DRESS_INTERVALS;\n\n  const isAtHome = row.at_home === 'TRUE' || row.at_home === true;\n  if (isAtHome && row.departure_time) {\n    for (const interval of DRESS_INTERVALS) {\n      const dressTime = new Date(depTime.getTime() - interval * 60 * 1000);\n      // Floor: no dressed reminder before 04:00\n      if (dressTime >= fourAM) {\n        reminderChecks.push({\n          type: `remind_dressed_${interval}`,\n          time: dressTime,\n          channels: ['push'],\n          dress_interval: interval\n        });\n      }\n    }\n  }\n\n  // Tentative events: skip TTS (push only)\n  if (row.is_tentative === 'TRUE' || row.is_tentative === true) {\n    for (const r of reminderChecks) {\n      r.channels = r.channels.filter(c => c !== 'tts');\n    }\n  }\n\n  for (const reminder of reminderChecks) {\n    if (!sent.includes(reminder.type) && reminder.time >= fiveMinAgo && reminder.time <= now) {\n      dueReminders.push({\n        ...row,\n        reminder_type: reminder.type,\n        channels: reminder.channels,\n        effective_departure: effectiveDep,\n        dress_interval: reminder.dress_interval || null\n      });\n    }\n  }\n}\n\n// Busy-day batching: if a user has >5 active events, batch dressed + 60-min reminders\nconst userEventCounts = {};\nfor (const item of items) {\n  const row = item.json;\n  if (!terminalStates.includes(row.current_state) && row.plan_date === today && row.is_online !== 'TRUE') {\n    userEventCounts[row.user_id] = (userEventCounts[row.user_id] || 0) + 1;\n  }\n}\n\n// Mark batch reminders\nfor (const r of dueReminders) {\n  r.busy_day = (userEventCounts[r.user_id] || 0) > 5;\n  r.event_count = userEventCounts[r.user_id] || 0;\n}\n\nreturn dueReminders.map(r => ({ json: r }));\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "a5280049-a5b9-4fc1-bf1c-deaa34d481fc",
+      "position": [
+        690,
+        300
+      ]
+    },
+    {
+      "name": "Any Due Reminders?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "{{ $input.all().length }}",
+              "rightValue": "0",
+              "operation": {
+                "type": "string",
+                "operation": "larger",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "68b23c52-3e5e-462f-bedf-ee18a3cc0ef6",
+      "position": [
+        910,
+        300
+      ]
+    },
+    {
+      "name": "Batch Busy-Day Reminders",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// On busy days (>5 events), batch dressed + 60-min reminders into a single digest per user.\n// remind_30, remind_15, remind_now are always sent individually (critical proximity alerts).\nconst allReminders = $input.all().map(i => i.json);\nconst batchableTypes = new Set(); // types that can be batched\n// All remind_dressed_* and remind_60 are batchable\nfor (const r of allReminders) {\n  if (r.reminder_type.startsWith('remind_dressed_') || r.reminder_type === 'remind_60') {\n    batchableTypes.add(r.reminder_type);\n  }\n}\n\n// Separate into pass-through (critical) and batchable groups\nconst passThrough = [];\nconst batchGroups = {}; // keyed by user_id\n\nfor (const r of allReminders) {\n  const isBatchable = r.busy_day && (r.reminder_type.startsWith('remind_dressed_') || r.reminder_type === 'remind_60');\n  if (!isBatchable) {\n    passThrough.push({ json: r });\n  } else {\n    if (!batchGroups[r.user_id]) batchGroups[r.user_id] = [];\n    batchGroups[r.user_id].push(r);\n  }\n}\n\n// Create one digest item per user for batched reminders\nfor (const [userId, reminders] of Object.entries(batchGroups)) {\n  const first = reminders[0]; // use first reminder's metadata as base\n  const eventSummaries = reminders.map(r => {\n    const depTime = new Date(r.effective_departure);\n    const timeStr = depTime.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });\n    return `${r.title} — depart by ${timeStr}`;\n  });\n\n  passThrough.push({ json: {\n    ...first,\n    reminder_type: 'busy_day_digest',\n    channels: ['push'],\n    notification_message: `You have ${first.event_count} events today. Upcoming:\\n${eventSummaries.join('\\n')}`,\n    notification_title: `Busy Day — ${first.event_count} Events`,\n    _batched_types: reminders.map(r => r.reminder_type) // track which types were batched (for marking sent)\n  }});\n}\n\nreturn passThrough;\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "31164980-0ec7-4978-819b-05f7e0fd0b0a",
+      "position": [
+        1130,
+        300
+      ]
+    },
+    {
+      "name": "Loop Reminders",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      },
+      "id": "2197cb99-8426-4039-b860-5ceebee045bd",
+      "position": [
+        250,
+        520
+      ]
+    },
+    {
+      "name": "Build Reminder Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\nconst r = $json;\n\n// Busy-day digest reminders are pre-built by Node 4a — pass through as-is\nif (r.reminder_type === 'busy_day_digest') {\n  return { json: r };\n}\n\nconst isTentative = r.is_tentative === 'TRUE' || r.is_tentative === true;\nconst prefix = isTentative ? '⚠ Tentative: ' : '';\n\nlet message = '';\nlet title = '';\nconst trafficInfo = r.traffic_updated_commute_min\n  ? ` (traffic: ${r.traffic_updated_commute_min} min)` : '';\n\n// Handle interval-based dressed reminders (remind_dressed_90, remind_dressed_60, etc.)\nif (r.reminder_type.startsWith('remind_dressed_')) {\n  const interval = r.dress_interval;\n  title = 'Get Ready';\n  if (interval >= 60) {\n    message = `${prefix}Time to get dressed — you leave in ${interval} min. ${r.clothing_advice || ''}`;\n  } else {\n    message = `${prefix}Leaving in ${interval} min — are you dressed? ${r.clothing_advice || ''}`;\n  }\n} else {\n  switch (r.reminder_type) {\n    case 'remind_60':\n      title = '1 Hour Warning';\n      message = `${prefix}${r.title} in ~1 hour. Depart by ${r.effective_departure}${trafficInfo}`;\n      break;\n    case 'remind_30':\n      title = '30 Minutes';\n      message = `${prefix}Leave in 30 min for ${r.title}. Mode: ${r.commute_mode}${trafficInfo}`;\n      break;\n    case 'remind_15':\n      title = '15 Minutes!';\n      message = `${prefix}Leave in 15 min for ${r.title}!`;\n      break;\n    case 'remind_now':\n      title = 'LEAVE NOW';\n      message = `${prefix}Leave NOW for ${r.title}! ${r.commute_minutes} min ${r.commute_mode}`;\n      break;\n  }\n}\n\nreturn { json: { ...r, notification_message: message, notification_title: title } };\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "064e1398-6801-4312-8c25-207463d35962",
+      "position": [
+        470,
+        520
+      ]
+    },
+    {
+      "name": "Send Notification",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "parameters": {
+        "source": "database",
+        "workflowId": "",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "9e9a7021-b71c-4c1f-baa6-fe771a7031de",
+      "position": [
+        690,
+        520
+      ]
+    },
+    {
+      "name": "Mark Reminder Sent",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "\n// For batched busy-day reminders, mark ALL batched types as sent.\n// For individual reminders, mark just the one type.\nconst r = $json;\nconst typesToMark = r._batched_types\n  ? r._batched_types  // array of types that were batched into one digest\n  : [r.reminder_type]; // single type\n\nconst currentSent = (r.reminders_sent || '').split(',').map(s => s.trim()).filter(Boolean);\nconst updatedSent = [...new Set([...currentSent, ...typesToMark])].join(',');\n\nreturn { json: { event_id: r.event_id, reminders_sent: updatedSent } };\n",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "b456342c-85ab-4a28-931a-9fa65a786950",
+      "position": [
+        910,
+        520
+      ]
+    },
+    {
+      "name": "Update Reminders Sent",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "daily_plan"
+        },
+        "dataMode": "autoMapInputData",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [
+            "event_id"
+          ]
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        },
+        "fieldsUi": {
+          "values": [
+            {
+              "column": "event_id",
+              "fieldValue": "{{ $json.event_id }}"
+            },
+            {
+              "column": "reminders_sent",
+              "fieldValue": "{{ $json.reminders_sent }}"
+            }
+          ]
+        }
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "c1f975c3-1c65-4881-a521-d8132eca21b9",
+      "position": [
+        1130,
+        520
+      ]
+    }
+  ],
+  "connections": {
+    "Every 5 Min 4AM-Midnight": {
+      "main": [
+        [
+          {
+            "node": "Read Daily Plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Daily Plan": {
+      "main": [
+        [
+          {
+            "node": "Find Due Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Due Reminders": {
+      "main": [
+        [
+          {
+            "node": "Any Due Reminders?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Any Due Reminders?": {
+      "main": [
+        [
+          {
+            "node": "Batch Busy-Day Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Batch Busy-Day Reminders": {
+      "main": [
+        [
+          {
+            "node": "Loop Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Reminders": {
+      "main": [
+        [
+          {
+            "node": "Build Reminder Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Reminder Message": {
+      "main": [
+        [
+          {
+            "node": "Send Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Notification": {
+      "main": [
+        [
+          {
+            "node": "Mark Reminder Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Reminder Sent": {
+      "main": [
+        [
+          {
+            "node": "Update Reminders Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Reminders Sent": {
+      "main": [
+        [
+          {
+            "node": "Loop Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "errorWorkflow": ""
+  }
+}
