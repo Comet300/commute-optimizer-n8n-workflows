@@ -7,11 +7,11 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "parameters": {
-        "triggerTimes": {
-          "item": [
+        "rule": {
+          "interval": [
             {
-              "mode": "custom",
-              "cronExpression": "0 8 1 * *"
+              "field": "cronExpression",
+              "expression": "0 8 1 * *"
             }
           ]
         }
@@ -55,7 +55,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "\n// Calculate statistics for last month\nconst now = new Date();\nconst lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);\nconst thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);\nconst items = $input.all().map(i => i.json);\n\n// Filter to last month's entries\nconst monthData = items.filter(i => {\n  const ts = new Date(i.timestamp);\n  return ts >= lastMonth && ts < thisMonth;\n});\n\n// Group by user\nconst byUser = {};\nfor (const trip of monthData) {\n  if (!byUser[trip.user_id]) {\n    byUser[trip.user_id] = { trips: [], modes: {} };\n  }\n  byUser[trip.user_id].trips.push(trip);\n  const mode = trip.commute_mode || 'unknown';\n  byUser[trip.user_id].modes[mode] = (byUser[trip.user_id].modes[mode] || 0) + 1;\n}\n\n// Calculate stats per user\nconst results = [];\nfor (const [userId, data] of Object.entries(byUser)) {\n  const onTimeCount = data.trips.filter(t => t.arrived_on_time === 'true' || t.arrived_on_time === true).length;\n  const totalTrips = data.trips.length;\n  const avgDelay = data.trips\n    .filter(t => t.arrival_delay_min)\n    .reduce((sum, t) => sum + parseFloat(t.arrival_delay_min), 0) / (totalTrips || 1);\n\n  // Estimate API calls (Distance Matrix + Geocoding)\n  const nonOnlineTrips = data.trips.filter(t => t.commute_mode !== 'none').length;\n  const dailyAvg = nonOnlineTrips / 30;\n  const distMatrixCalls = Math.round(dailyAvg * 3 * 30 + dailyAvg * 7 * 30); // WF1 + WF2\n  const geocodeCalls = Math.round(nonOnlineTrips * 1.2); // unique locations\n  const totalApiCalls = distMatrixCalls + geocodeCalls;\n  const estimatedCost = (totalApiCalls * 0.005).toFixed(2); // ~$0.005 per call average\n\n  results.push({\n    user_id: userId,\n    total_trips: totalTrips,\n    on_time_pct: totalTrips ? Math.round(onTimeCount / totalTrips * 100) : 0,\n    avg_delay_min: Math.round(avgDelay),\n    modes: JSON.stringify(data.modes),\n    api_calls_estimate: totalApiCalls,\n    api_cost_estimate: estimatedCost,\n    api_warning: totalApiCalls > 5000 ? '⚠ Approaching 12% of $200 free credit' : '✅ Well within free tier'\n  });\n}\n\nreturn results.map(r => ({ json: r }));\n",
+        "jsCode": "\n// Calculate statistics for last month\nconst now = new Date();\nconst lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);\nconst thisMonth = new Date(now.getFullYear(), now.getMonth(), 1);\nconst items = $input.all().map(i => i.json);\n\n// Filter to last month's entries\nconst monthData = items.filter(i => {\n  const ts = new Date(i.timestamp);\n  return ts >= lastMonth && ts < thisMonth;\n});\n\n// Group by user\nconst byUser = {};\nfor (const trip of monthData) {\n  if (!byUser[trip.user_id]) {\n    byUser[trip.user_id] = { trips: [], modes: {} };\n  }\n  byUser[trip.user_id].trips.push(trip);\n  const mode = trip.commute_mode || 'unknown';\n  byUser[trip.user_id].modes[mode] = (byUser[trip.user_id].modes[mode] || 0) + 1;\n}\n\n// Calculate stats per user\nconst results = [];\nfor (const [userId, data] of Object.entries(byUser)) {\n  const onTimeCount = data.trips.filter(t => t.arrived_on_time === 'TRUE' || t.arrived_on_time === true).length;\n  const totalTrips = data.trips.length;\n  const avgDelay = data.trips\n    .filter(t => t.arrival_delay_min)\n    .reduce((sum, t) => sum + parseFloat(t.arrival_delay_min), 0) / (totalTrips || 1);\n\n  // Estimate API calls (Distance Matrix + Geocoding)\n  const nonOnlineTrips = data.trips.filter(t => t.commute_mode !== 'none').length;\n  const dailyAvg = nonOnlineTrips / 30;\n  const distMatrixCalls = Math.round(dailyAvg * 3 * 30 + dailyAvg * 7 * 30); // WF1 + WF2\n  const geocodeCalls = Math.round(nonOnlineTrips * 1.2); // unique locations\n  const totalApiCalls = distMatrixCalls + geocodeCalls;\n  const estimatedCost = (totalApiCalls * 0.005).toFixed(2); // ~$0.005 per call average\n\n  results.push({\n    user_id: userId,\n    total_trips: totalTrips,\n    on_time_pct: totalTrips ? Math.round(onTimeCount / totalTrips * 100) : 0,\n    avg_delay_min: Math.round(avgDelay),\n    modes: JSON.stringify(data.modes),\n    api_calls_estimate: totalApiCalls,\n    api_cost_estimate: estimatedCost,\n    api_warning: totalApiCalls > 5000 ? '\u26a0 Approaching 12% of $200 free credit' : '\u2705 Well within free tier'\n  });\n}\n\nreturn results.map(r => ({ json: r }));\n",
         "mode": "runOnceForAllItems"
       },
       "id": "28db31e6-a753-4177-aa22-4c36c7e4675d",
@@ -83,7 +83,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "\nconst stats = $json;\nconst modes = JSON.parse(stats.modes);\nconst modeList = Object.entries(modes).map(([m, c]) => `${m}: ${c}`).join(', ');\n\nconst digest = `📊 Monthly Commute Report\n\nTotal trips: ${stats.total_trips}\nOn-time rate: ${stats.on_time_pct}%\nAverage delay: ${stats.avg_delay_min} min\nModes: ${modeList}\n\nMaps API this month: ~${stats.api_calls_estimate} calls ($${stats.api_cost_estimate} of $200 credit used)\n${stats.api_warning}`;\n\nreturn { json: { ...stats, digest } };\n",
+        "jsCode": "\nconst stats = $json;\nconst modes = JSON.parse(stats.modes);\nconst modeList = Object.entries(modes).map(([m, c]) => `${m}: ${c}`).join(', ');\n\nconst digest = `\ud83d\udcca Monthly Commute Report\n\nTotal trips: ${stats.total_trips}\nOn-time rate: ${stats.on_time_pct}%\nAverage delay: ${stats.avg_delay_min} min\nModes: ${modeList}\n\nMaps API this month: ~${stats.api_calls_estimate} calls ($${stats.api_cost_estimate} of $200 credit used)\n${stats.api_warning}`;\n\nreturn { json: { ...stats, digest } };\n",
         "mode": "runOnceForAllItems"
       },
       "id": "dc48cd12-e52a-4520-a5e4-cfdfca2d32c7",
@@ -98,7 +98,7 @@
       "typeVersion": 4.2,
       "parameters": {
         "method": "POST",
-        "url": "https://ntfy.sh/reminders-{{ $json.user_id }}",
+        "url": "=http://localhost:8080/reminders-{{ $json.user_id }}",
         "authentication": "predefinedCredentialType",
         "options": {},
         "nodeCredentialType": "httpHeaderAuth",
@@ -120,7 +120,7 @@
           ]
         },
         "sendBody": true,
-        "bodyType": "json",
+        "bodyType": "raw",
         "body": "{{ $json.digest }}"
       },
       "credentials": {
@@ -168,7 +168,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "\n// Find daily_plan rows older than 90 days\nconst ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);\nconst items = $input.all();\nconst oldRows = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const planDate = new Date(items[i].json.plan_date);\n  if (planDate < ninetyDaysAgo) {\n    oldRows.push({ json: { row_number: i + 2, plan_date: items[i].json.plan_date } });\n  }\n}\n\n// Sort descending — delete from bottom up to avoid row number shifts\noldRows.sort((a, b) => b.json.row_number - a.json.row_number);\nreturn oldRows;\n",
+        "jsCode": "\n// Find daily_plan rows older than 90 days\nconst ninetyDaysAgo = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);\nconst items = $input.all();\nconst oldRows = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const planDate = new Date(items[i].json.plan_date);\n  if (planDate < ninetyDaysAgo) {\n    oldRows.push({ json: { row_number: i + 2, plan_date: items[i].json.plan_date } });\n  }\n}\n\n// Sort descending \u2014 delete from bottom up to avoid row number shifts\noldRows.sort((a, b) => b.json.row_number - a.json.row_number);\nreturn oldRows;\n",
         "mode": "runOnceForAllItems"
       },
       "id": "26246d03-7d1b-4557-92d2-9abd728ef683",
@@ -205,7 +205,7 @@
           "mode": "name",
           "value": "daily_plan"
         },
-        "startIndex": "{{ $json.row_number }}",
+        "startIndex": "={{ $json.row_number }}",
         "endIndex": "={{ $json.row_number + 1 }}"
       },
       "credentials": {
@@ -290,7 +290,7 @@
           "mode": "name",
           "value": "commute_history"
         },
-        "startIndex": "{{ $json.row_number }}",
+        "startIndex": "={{ $json.row_number }}",
         "endIndex": "={{ $json.row_number + 1 }}"
       },
       "credentials": {
@@ -344,14 +344,14 @@
       "main": [
         [
           {
-            "node": "Read Daily Plan for Cleanup",
+            "node": "Build Monthly Digest",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Build Monthly Digest",
+            "node": "Read Daily Plan for Cleanup",
             "type": "main",
             "index": 0
           }
@@ -406,14 +406,14 @@
       "main": [
         [
           {
-            "node": "Read Commute History for Cleanup",
+            "node": "Delete Plan Row",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Delete Plan Row",
+            "node": "Read Commute History for Cleanup",
             "type": "main",
             "index": 0
           }
@@ -455,14 +455,14 @@
     },
     "Delete Old History Rows": {
       "main": [
-        [],
         [
           {
             "node": "Delete History Row",
             "type": "main",
             "index": 0
           }
-        ]
+        ],
+        []
       ]
     },
     "Delete History Row": {

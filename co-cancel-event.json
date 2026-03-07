@@ -10,14 +10,14 @@
         "httpMethod": "POST",
         "path": "cancel-event",
         "authentication": "headerAuth",
-        "responseMode": "lastNode",
+        "responseMode": "responseNode",
         "responseData": "allEntries",
         "options": {}
       },
       "credentials": {
         "httpHeaderAuth": {
           "id": "",
-          "name": "webhook-auth"
+          "name": "cancel-auth"
         }
       },
       "id": "597275d6-6c49-4495-abdf-3d76db4c19df",
@@ -80,7 +80,7 @@
           },
           "conditions": [
             {
-              "leftValue": "{{ $json.do_update }}",
+              "leftValue": "={{ $json.do_update }}",
               "rightValue": "true",
               "operation": {
                 "type": "string",
@@ -127,7 +127,7 @@
           "values": [
             {
               "column": "event_id",
-              "fieldValue": "{{ $json.event_id }}"
+              "fieldValue": "={{ $json.event_id }}"
             },
             {
               "column": "current_state",
@@ -135,11 +135,11 @@
             },
             {
               "column": "cancel_requested_at",
-              "fieldValue": "{{ $now.toISO() }}"
+              "fieldValue": "={{ $now.toISO() }}"
             },
             {
               "column": "state_version",
-              "fieldValue": "{{ $json.state_version }}"
+              "fieldValue": "={{ $json.state_version }}"
             }
           ]
         }
@@ -162,7 +162,7 @@
       "typeVersion": 4.2,
       "parameters": {
         "method": "POST",
-        "url": "http://localhost:8080/{{ $json.ntfy_topic }}",
+        "url": "=http://localhost:8080/{{ $('Check State + Cancel').item.json.ntfy_topic }}",
         "authentication": "predefinedCredentialType",
         "options": {},
         "nodeCredentialType": "httpHeaderAuth",
@@ -171,7 +171,7 @@
           "parameter": [
             {
               "name": "X-Title",
-              "value": "Event Cancelled — Stop Tracking"
+              "value": "Event Cancelled \u2014 Stop Tracking"
             },
             {
               "name": "X-Priority",
@@ -185,7 +185,7 @@
         },
         "sendBody": true,
         "bodyType": "json",
-        "body": "{\"message\":\"{{ $json.event_id }} cancelled — stop GPS tracking if no other events\",\"extras\":{\"action\":\"stop_tracking\",\"user_id\":\"{{ $json.user_id }}\"}}"
+        "body": "{\"message\":\"{{ $('Check State + Cancel').item.json.event_id }} cancelled \u2014 stop GPS tracking if no other events\",\"extras\":{\"action\":\"stop_tracking\",\"user_id\":\"{{ $('Check State + Cancel').item.json.user_id }}\"}}"
       },
       "credentials": {
         "httpHeaderAuth": {
@@ -208,7 +208,7 @@
         "options": {
           "responseCode": 200
         },
-        "responseBody": "{{ $(\"Check State + Cancel\").item.json.reply }}"
+        "responseBody": "={{ $(\"Check State + Cancel\").item.json.reply }}"
       },
       "id": "c4311aca-a52b-45b6-baf1-a1fa85b6282b",
       "position": [

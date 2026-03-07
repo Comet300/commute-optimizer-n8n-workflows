@@ -7,11 +7,11 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "parameters": {
-        "triggerTimes": {
-          "item": [
+        "rule": {
+          "interval": [
             {
-              "mode": "custom",
-              "cronExpression": "0 6-18/2 * * *"
+              "field": "cronExpression",
+              "expression": "0 6-18/2 * * *"
             }
           ]
         }
@@ -88,6 +88,15 @@
         "mode": "once",
         "options": {
           "waitForSubWorkflow": true
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "origin": "={{ $json.origin_coords }}",
+            "destination": "={{ $json.location_coords }}",
+            "event_start": "={{ $json.start_time }}",
+            "force_car_mode": "={{ $json.commute_mode === 'driving' || $json.commute_mode === 'rideshare' }}"
+          }
         }
       },
       "id": "da7d04f0-bb82-4bac-96e0-0eea8c11f184",
@@ -138,12 +147,16 @@
         "fieldsUi": {
           "values": [
             {
+              "column": "event_id",
+              "fieldValue": "={{ $json.event_id }}"
+            },
+            {
               "column": "traffic_updated_departure",
-              "fieldValue": "{{ $json.traffic_updated_departure }}"
+              "fieldValue": "={{ $json.traffic_updated_departure }}"
             },
             {
               "column": "traffic_updated_commute_min",
-              "fieldValue": "{{ $json.traffic_updated_commute_min }}"
+              "fieldValue": "={{ $json.traffic_updated_commute_min }}"
             }
           ]
         }
@@ -172,7 +185,7 @@
           },
           "conditions": [
             {
-              "leftValue": "{{ $json.changed_more_than_10 }}",
+              "leftValue": "={{ $json.changed_more_than_10 }}",
               "rightValue": "true",
               "operation": {
                 "type": "string",
@@ -196,7 +209,7 @@
       "typeVersion": 4.2,
       "parameters": {
         "method": "POST",
-        "url": "http://localhost:8080/{{ $(\"Loop Events\").item.json.ntfy_topic }}",
+        "url": "=http://localhost:8080/{{ $(\"Loop Events\").item.json.ntfy_topic }}",
         "authentication": "predefinedCredentialType",
         "options": {},
         "nodeCredentialType": "httpHeaderAuth",
@@ -213,7 +226,7 @@
             },
             {
               "name": "X-Tags",
-              "value": "traffic"
+              "value": "vertical_traffic_light"
             }
           ]
         },
@@ -276,7 +289,8 @@
             "type": "main",
             "index": 0
           }
-        ]
+        ],
+        []
       ]
     },
     "Recalculate Departure": {

@@ -39,7 +39,7 @@
           },
           "conditions": [
             {
-              "leftValue": "{{ $json.send_push }}",
+              "leftValue": "={{ $json.send_push }}",
               "rightValue": "true",
               "operation": {
                 "type": "string",
@@ -63,7 +63,7 @@
       "typeVersion": 4.2,
       "parameters": {
         "method": "POST",
-        "url": "https://ntfy.sh/{{ $('Parse Channels').item.json.ntfy_topic }}",
+        "url": "=http://localhost:8080/{{ $('Parse Channels').item.json.ntfy_topic }}",
         "authentication": "predefinedCredentialType",
         "options": {},
         "nodeCredentialType": "httpHeaderAuth",
@@ -72,11 +72,11 @@
           "parameter": [
             {
               "name": "X-Title",
-              "value": "{{ $(\"Parse Channels\").item.json.title }}"
+              "value": "={{ $(\"Parse Channels\").item.json.title }}"
             },
             {
               "name": "X-Priority",
-              "value": "3"
+              "value": "={{ $(\"Parse Channels\").item.json.priority || '3' }}"
             },
             {
               "name": "X-Tags",
@@ -84,12 +84,12 @@
             },
             {
               "name": "X-Actions",
-              "value": "http, Cancel Event, https://YOUR_EXTERNAL_URL:5679/webhook/cancel-event, method=POST, headers.X-Cancel-Token={{ $vars.CANCEL_SECRET }}, body={\"event_id\":\"{{ $(\"Parse Channels\").item.json.event_id }}\",\"user_id\":\"{{ $(\"Parse Channels\").item.json.user_id }}\"}"
+              "value": "=http, Cancel Event, {{ $vars.CANCEL_WEBHOOK_URL }}/webhook/cancel-event, method=POST, headers.X-Cancel-Token={{ $vars.CANCEL_SECRET }}, body='{\"event_id\":\"{{ $(\"Parse Channels\").item.json.event_id }}\",\"user_id\":\"{{ $(\"Parse Channels\").item.json.user_id }}\"}'"
             }
           ]
         },
         "sendBody": true,
-        "bodyType": "json",
+        "bodyType": "raw",
         "body": "{{ $(\"Parse Channels\").item.json.message }}"
       },
       "credentials": {
@@ -117,7 +117,7 @@
           },
           "conditions": [
             {
-              "leftValue": "{{ $json.send_tts }}",
+              "leftValue": "={{ $json.send_tts }}",
               "rightValue": "true",
               "operation": {
                 "type": "string",
@@ -161,7 +161,7 @@
           },
           "conditions": [
             {
-              "leftValue": "{{ $json.send_sms }}",
+              "leftValue": "={{ $json.send_sms }}",
               "rightValue": "true",
               "operation": {
                 "type": "string",
@@ -185,12 +185,28 @@
       "typeVersion": 4.2,
       "parameters": {
         "method": "POST",
-        "url": "https://api.twilio.com/2010-04-01/Accounts/{{ $vars.TWILIO_ACCOUNT_SID }}/Messages.json",
-        "authentication": "none",
+        "url": "=https://api.twilio.com/2010-04-01/Accounts/{{ $vars.TWILIO_ACCOUNT_SID }}/Messages.json",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "twilioApi",
         "options": {},
         "sendBody": true,
-        "bodyType": "json",
-        "body": "From={{ $vars.TWILIO_PHONE_NUMBER }}&To={{ $(\"Parse Channels\").item.json.phone_number }}&Body={{ encodeURIComponent($(\"Parse Channels\").item.json.message) }}"
+        "bodyType": "form-urlencoded",
+        "bodyParametersUi": {
+          "parameter": [
+            {
+              "name": "From",
+              "value": "={{ $vars.TWILIO_PHONE_NUMBER }}"
+            },
+            {
+              "name": "To",
+              "value": "={{ $(\"Parse Channels\").item.json.phone_number }}"
+            },
+            {
+              "name": "Body",
+              "value": "={{ $(\"Parse Channels\").item.json.message }}"
+            }
+          ]
+        }
       },
       "credentials": {
         "twilioApi": {

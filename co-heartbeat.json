@@ -10,8 +10,8 @@
         "rule": {
           "interval": [
             {
-              "field": "minutes",
-              "minutesInterval": 30
+              "field": "cronExpression",
+              "expression": "*/30 4-23 * * *"
             }
           ]
         }
@@ -36,7 +36,10 @@
           "mode": "name",
           "value": "user_config"
         },
-        "options": {}
+        "options": {
+          "returnAll": false,
+          "limit": 1
+        }
       },
       "credentials": {
         "googleSheetsOAuth2Api": {
@@ -61,18 +64,26 @@
         "authentication": "predefinedCredentialType",
         "options": {},
         "nodeCredentialType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyType": "raw",
+        "body": "heartbeat ping",
         "sendHeaders": true,
         "headerParametersUi": {
           "parameter": [
             {
-              "name": "Authorization",
-              "value": "Bearer YOUR_TOKEN"
+              "name": "X-Title",
+              "value": "Heartbeat Ping"
+            },
+            {
+              "name": "X-Priority",
+              "value": "1"
+            },
+            {
+              "name": "X-Tags",
+              "value": "heartbeat"
             }
           ]
-        },
-        "sendBody": true,
-        "bodyType": "raw",
-        "body": "heartbeat ping"
+        }
       },
       "credentials": {
         "httpHeaderAuth": {
@@ -142,7 +153,7 @@
           },
           "conditions": [
             {
-              "leftValue": "{{ $json.should_retrigger_wf1 }}",
+              "leftValue": "={{ $json.should_retrigger_wf1 }}",
               "rightValue": "true",
               "operation": {
                 "type": "string",
@@ -179,6 +190,24 @@
       ]
     },
     {
+      "name": "Catch-up WF2",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "parameters": {
+        "source": "database",
+        "workflowId": "",
+        "mode": "once",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "77dfe644-051c-4b74-9588-ecf4013d41ef",
+      "position": [
+        670,
+        520
+      ]
+    },
+    {
       "name": "Any Failures?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
@@ -190,7 +219,7 @@
           },
           "conditions": [
             {
-              "leftValue": "{{ $json.all_ok }}",
+              "leftValue": "={{ $json.all_ok }}",
               "rightValue": "false",
               "operation": {
                 "type": "string",
@@ -280,7 +309,7 @@
           },
           "conditions": [
             {
-              "leftValue": "{{ $(\"Evaluate Health\").item.json.is_daily_summary }}",
+              "leftValue": "={{ $(\"Evaluate Health\").item.json.is_daily_summary }}",
               "rightValue": "true",
               "operation": {
                 "type": "string",
@@ -304,7 +333,7 @@
       "typeVersion": 4.2,
       "parameters": {
         "method": "POST",
-        "url": "http://localhost:8080/commute-alerts",
+        "url": "http://localhost:8080/system-errors",
         "authentication": "predefinedCredentialType",
         "options": {},
         "nodeCredentialType": "httpHeaderAuth",
@@ -427,6 +456,17 @@
       ]
     },
     "Catch-up Planning": {
+      "main": [
+        [
+          {
+            "node": "Catch-up WF2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Catch-up WF2": {
       "main": [
         [
           {

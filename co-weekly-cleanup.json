@@ -7,11 +7,11 @@
       "type": "n8n-nodes-base.scheduleTrigger",
       "typeVersion": 1.2,
       "parameters": {
-        "triggerTimes": {
-          "item": [
+        "rule": {
+          "interval": [
             {
-              "mode": "custom",
-              "cronExpression": "0 4 * * 0"
+              "field": "cronExpression",
+              "expression": "0 4 * * 0"
             }
           ]
         }
@@ -93,7 +93,7 @@
           "value": "location_updates"
         },
         "startIndex": "={{ $json.row_number }}",
-        "endIndex": "={{ $json.row_number }}"
+        "endIndex": "={{ $json.row_number + 1 }}"
       },
       "credentials": {
         "googleSheetsOAuth2Api": {
@@ -178,7 +178,7 @@
           "value": "error_log"
         },
         "startIndex": "={{ $json.row_number }}",
-        "endIndex": "={{ $json.row_number }}"
+        "endIndex": "={{ $json.row_number + 1 }}"
       },
       "credentials": {
         "googleSheetsOAuth2Api": {
@@ -220,8 +220,12 @@
         "fieldsUi": {
           "values": [
             {
+              "column": "user_id",
+              "fieldValue": "={{ $json.user_id }}"
+            },
+            {
               "column": "last_cleanup_at",
-              "fieldValue": "{{ $now.toISO() }}"
+              "fieldValue": "={{ $now.toISO() }}"
             }
           ]
         }
@@ -236,6 +240,34 @@
       "position": [
         1130,
         520
+      ]
+    },
+    {
+      "name": "Read User Config",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "user_config"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "position": [
+        1130,
+        300
       ]
     }
   ],
@@ -277,14 +309,14 @@
       "main": [
         [
           {
-            "node": "Read Error Log",
+            "node": "Delete Row",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Delete Row",
+            "node": "Read Error Log",
             "type": "main",
             "index": 0
           }
@@ -328,14 +360,14 @@
       "main": [
         [
           {
-            "node": "Update last_cleanup_at",
+            "node": "Delete Error Row",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Delete Error Row",
+            "node": "Read User Config",
             "type": "main",
             "index": 0
           }
@@ -347,6 +379,17 @@
         [
           {
             "node": "Delete Old Error Rows",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read User Config": {
+      "main": [
+        [
+          {
+            "node": "Update last_cleanup_at",
             "type": "main",
             "index": 0
           }

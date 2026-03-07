@@ -10,8 +10,8 @@
         "rule": {
           "interval": [
             {
-              "field": "minutes",
-              "minutesInterval": 30
+              "field": "cronExpression",
+              "expression": "*/30 6-22 * * *"
             }
           ]
         }
@@ -74,7 +74,7 @@
         "authentication": "none",
         "options": {},
         "sendBody": true,
-        "contentType": "form-urlencoded",
+        "bodyType": "form-urlencoded",
         "bodyParametersUi": {
           "parameter": [
             {
@@ -83,15 +83,15 @@
             },
             {
               "name": "refresh_token",
-              "value": "{{ $(\"Loop Users\").item.json.calendar_refresh_token }}"
+              "value": "={{ $(\"Loop Users\").item.json.calendar_refresh_token }}"
             },
             {
               "name": "client_id",
-              "value": "{{ $vars.GOOGLE_CLIENT_ID }}"
+              "value": "={{ $vars.GOOGLE_CLIENT_ID }}"
             },
             {
               "name": "client_secret",
-              "value": "{{ $vars.GOOGLE_CLIENT_SECRET }}"
+              "value": "={{ $vars.GOOGLE_CLIENT_SECRET }}"
             }
           ]
         }
@@ -116,7 +116,7 @@
           "parameter": [
             {
               "name": "Authorization",
-              "value": "Bearer {{ $json.access_token }}"
+              "value": "=Bearer {{ $json.access_token }}"
             }
           ]
         },
@@ -125,11 +125,11 @@
           "parameter": [
             {
               "name": "timeMin",
-              "value": "{{ $now.startOf('day').toISO() }}"
+              "value": "={{ $now.startOf('day').toISO() }}"
             },
             {
               "name": "timeMax",
-              "value": "{{ $now.endOf('day').toISO() }}"
+              "value": "={{ $now.endOf('day').toISO() }}"
             },
             {
               "name": "singleEvents",
@@ -138,6 +138,10 @@
             {
               "name": "orderBy",
               "value": "startTime"
+            },
+            {
+              "name": "maxResults",
+              "value": "50"
             }
           ]
         }
@@ -145,6 +149,20 @@
       "id": "cb4acac1-39ba-4975-bb70-93c9a58d3fc7",
       "position": [
         1130,
+        300
+      ]
+    },
+    {
+      "name": "Extract Calendar Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "return ($json.items || []).map(e => ({json: e}));",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "b2c3d4e5-f6a7-8901-bcde-f23456789012",
+      "position": [
+        1350,
         300
       ]
     },
@@ -181,7 +199,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "\nconst calendarEvents = $('Combine Calendar Results').all().map(i => i.json);\nconst planRows = $input.all().map(i => i.json);\nconst user = $('Loop Users').item.json;\nconst today = $now.toFormat('yyyy-MM-dd');\n\n// Build lookups\nconst planByEventId = {};\nfor (const row of planRows) {\n  if (row.user_id === user.user_id && row.plan_date === today) {\n    planByEventId[row.event_id] = row;\n  }\n}\n\nconst calByEventId = {};\nfor (const evt of calendarEvents) {\n  calByEventId[evt.id] = evt;\n}\n\nconst newEvents = [];\nconst changedEvents = [];\nconst deletedEvents = [];\n\n// NEW: in calendar but not in plan\nfor (const evt of calendarEvents) {\n  if (!planByEventId[evt.id]) {\n    newEvents.push(evt);\n  }\n}\n\n// CHANGED: in both, but time or location differ\nfor (const [eventId, evt] of Object.entries(calByEventId)) {\n  const plan = planByEventId[eventId];\n  if (!plan) continue;\n  const terminalStates = ['arrived', 'cancelled', 'skipped', 'expired'];\n  if (terminalStates.includes(plan.current_state)) continue;\n\n  const calStart = evt.start?.dateTime || evt.start?.date;\n  const calLocation = (evt.location || '').trim();\n  const planStart = plan.start_time;\n  const planLocation = (plan.location || '').trim();\n\n  if (calStart !== planStart || calLocation !== planLocation) {\n    changedEvents.push({\n      calendar_event: evt,\n      plan_row: plan,\n      location_changed: calLocation !== planLocation,\n      time_changed: calStart !== planStart\n    });\n  }\n}\n\n// DELETED: in plan but not in calendar\nfor (const [eventId, plan] of Object.entries(planByEventId)) {\n  if (!calByEventId[eventId]) {\n    const terminalStates = ['arrived', 'cancelled', 'skipped', 'expired'];\n    if (!terminalStates.includes(plan.current_state)) {\n      deletedEvents.push(plan);\n    }\n  }\n}\n\nreturn { json: {\n  new_events: newEvents,\n  changed_events: changedEvents,\n  deleted_events: deletedEvents,\n  user_id: user.user_id,\n  ntfy_topic: user.ntfy_topic,\n  has_changes: newEvents.length + changedEvents.length + deletedEvents.length > 0\n}};\n",
+        "jsCode": "\nconst calendarEvents = $('Extract Calendar Events').all().map(i => i.json);\nconst planRows = $input.all().map(i => i.json);\nconst user = $('Loop Users').item.json;\nconst today = $now.toFormat('yyyy-MM-dd');\n\n// Build lookups\nconst planByEventId = {};\nfor (const row of planRows) {\n  if (row.user_id === user.user_id && row.plan_date === today) {\n    planByEventId[row.event_id] = row;\n  }\n}\n\nconst calByEventId = {};\nfor (const evt of calendarEvents) {\n  calByEventId[evt.id] = evt;\n}\n\nconst newEvents = [];\nconst changedEvents = [];\nconst deletedEvents = [];\n\n// NEW: in calendar but not in plan\nfor (const evt of calendarEvents) {\n  if (!planByEventId[evt.id]) {\n    newEvents.push(evt);\n  }\n}\n\n// CHANGED: in both, but time or location differ\nfor (const [eventId, evt] of Object.entries(calByEventId)) {\n  const plan = planByEventId[eventId];\n  if (!plan) continue;\n  const terminalStates = ['arrived', 'cancelled', 'skipped', 'expired'];\n  if (terminalStates.includes(plan.current_state)) continue;\n\n  const calStart = evt.start?.dateTime || evt.start?.date;\n  const calLocation = (evt.location || '').trim();\n  const planStart = plan.start_time;\n  const planLocation = (plan.location || '').trim();\n\n  if (calStart !== planStart || calLocation !== planLocation) {\n    changedEvents.push({\n      calendar_event: evt,\n      plan_row: plan,\n      location_changed: calLocation !== planLocation,\n      time_changed: calStart !== planStart\n    });\n  }\n}\n\n// DELETED: in plan but not in calendar\nfor (const [eventId, plan] of Object.entries(planByEventId)) {\n  if (!calByEventId[eventId]) {\n    const terminalStates = ['arrived', 'cancelled', 'skipped', 'expired'];\n    if (!terminalStates.includes(plan.current_state)) {\n      deletedEvents.push(plan);\n    }\n  }\n}\n\nreturn { json: {\n  new_events: newEvents,\n  changed_events: changedEvents,\n  deleted_events: deletedEvents,\n  user_id: user.user_id,\n  ntfy_topic: user.ntfy_topic,\n  has_changes: newEvents.length + changedEvents.length + deletedEvents.length > 0\n}};\n",
         "mode": "runOnceForAllItems"
       },
       "id": "5a756f8b-c073-405d-8949-f32453e6285a",
@@ -202,7 +220,7 @@
           },
           "conditions": [
             {
-              "leftValue": "{{ $json.has_changes }}",
+              "leftValue": "={{ $json.has_changes }}",
               "rightValue": "true",
               "operation": {
                 "type": "string",
@@ -258,6 +276,18 @@
         "mode": "once",
         "options": {
           "waitForSubWorkflow": true
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $json.id }}",
+            "summary": "={{ $json.summary }}",
+            "location": "={{ $json.location || '' }}",
+            "start": "={{ JSON.stringify($json.start) }}",
+            "end": "={{ JSON.stringify($json.end) }}",
+            "attendees": "={{ JSON.stringify($json.attendees || []) }}",
+            "conferenceData": "={{ JSON.stringify($json.conferenceData || {}) }}"
+          }
         }
       },
       "id": "807c8c4a-93df-46f6-b0fe-742d92bb52e0",
@@ -278,7 +308,7 @@
           },
           "conditions": [
             {
-              "leftValue": "{{ $json.skip }}",
+              "leftValue": "={{ $json.skip }}",
               "rightValue": "true",
               "operation": {
                 "type": "string",
@@ -308,7 +338,7 @@
           },
           "conditions": [
             {
-              "leftValue": "{{ $json.is_online }}",
+              "leftValue": "={{ $json.is_online }}",
               "rightValue": "true",
               "operation": {
                 "type": "string",
@@ -333,14 +363,15 @@
       "parameters": {
         "method": "GET",
         "url": "https://maps.googleapis.com/maps/api/geocode/json",
-        "authentication": "none",
+        "authentication": "genericCredentialType",
+        "nodeCredentialType": "httpQueryAuth",
         "options": {},
         "sendQuery": true,
         "queryParametersUi": {
           "parameter": [
             {
               "name": "address",
-              "value": "{{ $(\"Loop New Events\").item.json.location }}"
+              "value": "={{ $(\"Loop New Events\").item.json.location }}"
             }
           ]
         }
@@ -362,7 +393,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "\n// Decide origin for this mid-day event:\n// 1. Read latest location_update for user\n// 2. If recent (<2h) and >5km from home → origin = current location, origin_type = \"travel\"\n// 3. Else → origin = HOME_COORDS, origin_type = \"home\"\n// Also compute at_home from latest GPS/WiFi data\n\nconst geocode = $json; // from geocode response\nconst user = $('Loop Users').item.json;\nconst newEvent = $('Loop New Events').item.json;\nconst HOME_COORDS = $vars.HOME_COORDS;\nconst HOME_RADIUS_METERS = parseInt($vars.HOME_RADIUS_METERS) || 200;\nconst [homeLat, homeLng] = HOME_COORDS.split(',').map(Number);\n\n// Extract geocoded coords\nconst geo = geocode.results?.[0]?.geometry?.location;\nconst locationCoords = geo ? `${geo.lat},${geo.lng}` : '';\n\n// Origin determination: WF1 uses a preceding Sheets read + Code node (Node 7/7b) to detect\n// if the user is travelling. WF8 can't do this in a single Code node because n8n Code nodes\n// can't call Google Sheets mid-execution. Adding a separate Sheets read node before this one\n// would work but adds 2 extra nodes per user — marginal benefit since WF4 corrects the origin\n// in real-time as soon as the first GPS update arrives (typically within minutes).\n// Design decision: use HOME_COORDS default; WF4 overrides with actual GPS position.\nconst originCoords = HOME_COORDS;\nconst originType = 'home';\nconst atHome = true; // Conservative default — WF4 corrects in real-time via GPS\n\nconst calStart = newEvent.start?.dateTime || newEvent.start?.date;\nconst calEnd = newEvent.end?.dateTime || newEvent.end?.date;\n\nreturn { json: {\n  event_id: newEvent.id,\n  user_id: user.user_id,\n  plan_date: $now.toFormat('yyyy-MM-dd'),\n  title: newEvent.summary || '(no title)',\n  location: newEvent.location || '',\n  location_coords: locationCoords,\n  start_time: calStart,\n  end_time: calEnd,\n  origin_coords: originCoords,\n  origin_type: originType,\n  at_home: atHome,\n  is_online: false,\n  is_tentative: newEvent.status === 'tentative',\n  ntfy_topic: user.ntfy_topic,\n  _geocode_failed: !geo\n}};\n",
+        "jsCode": "\n// Decide origin for this mid-day event:\n// 1. Read latest location_update for user\n// 2. If recent (<2h) and >5km from home → origin = current location, origin_type = \"travel\"\n// 3. Else → origin = HOME_COORDS, origin_type = \"home\"\n// Also compute at_home from latest GPS/WiFi data\n\nconst geocode = $json; // from geocode response\nconst user = $('Loop Users').item.json;\nconst newEvent = $('Loop New Events').item.json;\nconst HOME_COORDS = $vars.HOME_COORDS;\nconst HOME_RADIUS_METERS = parseInt($vars.HOME_RADIUS_METERS) || 200;\nconst [homeLat, homeLng] = HOME_COORDS.split(',').map(Number);\n\n// Extract geocoded coords\nconst geo = geocode.results?.[0]?.geometry?.location;\nconst locationCoords = geo ? `${geo.lat},${geo.lng}` : '';\n\n// Origin determination: WF1 uses a preceding Sheets read + Code node (Node 7/7b) to detect\n// if the user is travelling. WF8 can't do this in a single Code node because n8n Code nodes\n// can't call Google Sheets mid-execution. Adding a separate Sheets read node before this one\n// would work but adds 2 extra nodes per user — marginal benefit since WF4 corrects the origin\n// in real-time as soon as the first GPS update arrives (typically within minutes).\n// Design decision: use HOME_COORDS default; WF4 overrides with actual GPS position.\nconst originCoords = HOME_COORDS;\nconst originType = 'home';\nconst atHome = true; // Conservative default — WF4 corrects in real-time via GPS\n\nconst calStart = newEvent.start?.dateTime || newEvent.start?.date;\nconst calEnd = newEvent.end?.dateTime || newEvent.end?.date;\n\nreturn { json: {\n  event_id: newEvent.id,\n  user_id: user.user_id,\n  plan_date: $now.toFormat('yyyy-MM-dd'),\n  title: newEvent.summary || '(no title)',\n  location: newEvent.location || '',\n  location_coords: locationCoords,\n  start_time: calStart,\n  end_time: calEnd,\n  origin_coords: originCoords,\n  origin_type: originType,\n  at_home: atHome,\n  is_online: false,\n  is_tentative: $('Classify New Event').item.json.is_tentative,\n  ntfy_topic: user.ntfy_topic,\n  _geocode_failed: !geo\n}};\n",
         "mode": "runOnceForAllItems"
       },
       "id": "adac2496-3d67-4505-a9fe-f5fc57d3709e",
@@ -381,6 +412,15 @@
         "mode": "once",
         "options": {
           "waitForSubWorkflow": true
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "origin": "={{ $json.origin_coords }}",
+            "destination": "={{ $json.location_coords }}",
+            "event_start": "={{ $('Classify New Event').item.json.adjusted_start || $json.start_time }}",
+            "force_car_mode": "={{ $('Classify New Event').item.json.force_car || false }}"
+          }
         }
       },
       "id": "b29e6ee5-ed69-4b3c-adaf-76dfdebd265b",
@@ -399,6 +439,14 @@
         "mode": "once",
         "options": {
           "waitForSubWorkflow": true
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "location_coords": "={{ $('Determine Origin + At-Home for New Event').item.json.location_coords }}",
+            "event_start": "={{ $('Classify New Event').item.json.adjusted_start }}",
+            "event_end": "={{ $('Classify New Event').item.json.adjusted_end }}"
+          }
         }
       },
       "id": "92d13d45-f36e-46a2-a5c9-4f75108486ba",
@@ -426,7 +474,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "\n// Online events: no commute, no departure time, no weather.\n// Only remind_60 and remind_15 relative to start_time.\nconst user = $('Loop Users').item.json;\nconst newEvent = $('Loop New Events').item.json;\nconst calStart = newEvent.start?.dateTime || newEvent.start?.date;\nconst calEnd = newEvent.end?.dateTime || newEvent.end?.date;\nconst start = new Date(calStart);\n\nconst remind60 = new Date(start.getTime() - 60 * 60 * 1000);\nconst remind15 = new Date(start.getTime() - 15 * 60 * 1000);\n\nreturn { json: {\n  event_id: newEvent.id,\n  user_id: user.user_id,\n  plan_date: $now.toFormat('yyyy-MM-dd'),\n  title: newEvent.summary || '(no title)',\n  location: '',\n  location_coords: '',\n  start_time: calStart,\n  end_time: calEnd,\n  origin_coords: '',\n  origin_type: '',\n  at_home: true,\n  is_online: true,\n  is_tentative: newEvent.status === 'tentative',\n  ntfy_topic: user.ntfy_topic,\n  departure_time: '',\n  commute_minutes: 0,\n  commute_mode: '',\n  weather_worst: '',\n  clothing_advice: '',\n  remind_dressed: '',\n  remind_60: remind60.toISOString(),\n  remind_30: '',\n  remind_15: remind15.toISOString(),\n  remind_now: '',\n  reminders_sent: '',\n  current_state: 'planned',\n  state_version: 0,\n  sync_updated: $now.toISO(),\n  departed_at: '',\n  _departure_within_2h: false\n}};\n",
+        "jsCode": "\n// Online events: no commute, no departure time, no weather.\n// Only remind_60 and remind_15 relative to start_time.\nconst user = $('Loop Users').item.json;\nconst newEvent = $('Loop New Events').item.json;\nconst calStart = newEvent.start?.dateTime || newEvent.start?.date;\nconst calEnd = newEvent.end?.dateTime || newEvent.end?.date;\nconst start = new Date(calStart);\n\nconst remind60 = new Date(start.getTime() - 60 * 60 * 1000);\nconst remind15 = new Date(start.getTime() - 15 * 60 * 1000);\n\nreturn { json: {\n  event_id: newEvent.id,\n  user_id: user.user_id,\n  plan_date: $now.toFormat('yyyy-MM-dd'),\n  title: newEvent.summary || '(no title)',\n  location: '',\n  location_coords: '',\n  start_time: calStart,\n  end_time: calEnd,\n  origin_coords: '',\n  origin_type: '',\n  at_home: true,\n  is_online: true,\n  is_tentative: $('Classify New Event').item.json.is_tentative,\n  ntfy_topic: user.ntfy_topic,\n  departure_time: '',\n  commute_minutes: 0,\n  commute_mode: '',\n  weather_worst: '',\n  clothing_advice: '',\n  remind_dressed: '',\n  remind_60: remind60.toISOString(),\n  remind_30: '',\n  remind_15: remind15.toISOString(),\n  remind_now: '',\n  reminders_sent: '',\n  current_state: 'planned',\n  state_version: 0,\n  sync_updated: $now.toISO(),\n  departed_at: '',\n  _departure_within_2h: false\n}};\n",
         "mode": "runOnceForAllItems"
       },
       "id": "35ba2f55-ff9b-4528-907a-9768ac5028eb",
@@ -485,7 +533,7 @@
           },
           "conditions": [
             {
-              "leftValue": "{{ $json._departure_within_2h }}",
+              "leftValue": "={{ $json._departure_within_2h }}",
               "rightValue": "true",
               "operation": {
                 "type": "string",
@@ -509,7 +557,7 @@
       "typeVersion": 4.2,
       "parameters": {
         "method": "POST",
-        "url": "http://localhost:8080/{{ $json.ntfy_topic }}",
+        "url": "=http://localhost:8080/{{ $json.ntfy_topic }}",
         "authentication": "predefinedCredentialType",
         "options": {},
         "nodeCredentialType": "httpHeaderAuth",
@@ -586,7 +634,7 @@
           },
           "conditions": [
             {
-              "leftValue": "{{ $json.location_changed }}",
+              "leftValue": "={{ $json.location_changed }}",
               "rightValue": "true",
               "operation": {
                 "type": "string",
@@ -611,14 +659,15 @@
       "parameters": {
         "method": "GET",
         "url": "https://maps.googleapis.com/maps/api/geocode/json",
-        "authentication": "none",
+        "authentication": "genericCredentialType",
+        "nodeCredentialType": "httpQueryAuth",
         "options": {},
         "sendQuery": true,
         "queryParametersUi": {
           "parameter": [
             {
               "name": "address",
-              "value": "{{ $(\"Loop Changed Events\").item.json.new_location }}"
+              "value": "={{ $(\"Loop Changed Events\").item.json.new_location }}"
             }
           ]
         }
@@ -645,6 +694,15 @@
         "mode": "once",
         "options": {
           "waitForSubWorkflow": true
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "origin": "={{ $('Loop Changed Events').item.json.origin_coords }}",
+            "destination": "={{ $json.results[0].geometry.location.lat }},{{ $json.results[0].geometry.location.lng }}",
+            "event_start": "={{ $('Loop Changed Events').item.json.new_start_time }}",
+            "force_car_mode": "={{ $('Loop Changed Events').item.json.commute_mode === 'driving' || $('Loop Changed Events').item.json.commute_mode === 'rideshare' }}"
+          }
         }
       },
       "id": "01664ed9-ddb4-4973-af63-c24b922b6373",
@@ -663,6 +721,14 @@
         "mode": "once",
         "options": {
           "waitForSubWorkflow": true
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "location_coords": "={{ $('Re-Geocode Changed Location').item.json.results[0].geometry.location.lat }},{{ $('Re-Geocode Changed Location').item.json.results[0].geometry.location.lng }}",
+            "event_start": "={{ $('Loop Changed Events').item.json.new_start_time }}",
+            "event_end": "={{ $('Loop Changed Events').item.json.new_end_time }}"
+          }
         }
       },
       "id": "189d9442-9926-42f4-9ff7-e7a63fa787d5",
@@ -699,7 +765,7 @@
           "mode": "name",
           "value": "daily_plan"
         },
-        "dataMode": "autoMapInputData",
+        "dataMode": "defineBelow",
         "columns": {
           "mappingMode": "defineBelow",
           "value": {},
@@ -713,68 +779,72 @@
         "fieldsUi": {
           "values": [
             {
+              "column": "event_id",
+              "fieldValue": "={{ $json.event_id }}"
+            },
+            {
               "column": "start_time",
-              "fieldValue": "{{ $json.start_time }}"
+              "fieldValue": "={{ $json.start_time }}"
             },
             {
               "column": "end_time",
-              "fieldValue": "{{ $json.end_time }}"
+              "fieldValue": "={{ $json.end_time }}"
             },
             {
               "column": "location",
-              "fieldValue": "{{ $json.location }}"
+              "fieldValue": "={{ $json.location }}"
             },
             {
               "column": "location_coords",
-              "fieldValue": "{{ $json.location_coords }}"
+              "fieldValue": "={{ $json.location_coords }}"
             },
             {
               "column": "departure_time",
-              "fieldValue": "{{ $json.departure_time }}"
+              "fieldValue": "={{ $json.departure_time }}"
             },
             {
               "column": "commute_minutes",
-              "fieldValue": "{{ $json.commute_minutes }}"
+              "fieldValue": "={{ $json.commute_minutes }}"
             },
             {
               "column": "commute_mode",
-              "fieldValue": "{{ $json.commute_mode }}"
+              "fieldValue": "={{ $json.commute_mode }}"
             },
             {
               "column": "weather_worst",
-              "fieldValue": "{{ $json.weather_worst }}"
+              "fieldValue": "={{ $json.weather_worst }}"
             },
             {
               "column": "clothing_advice",
-              "fieldValue": "{{ $json.clothing_advice }}"
+              "fieldValue": "={{ $json.clothing_advice }}"
             },
             {
               "column": "remind_dressed",
-              "fieldValue": "{{ $json.remind_dressed }}"
+              "fieldValue": "={{ $json.remind_dressed }}"
             },
             {
               "column": "remind_60",
-              "fieldValue": "{{ $json.remind_60 }}"
+              "fieldValue": "={{ $json.remind_60 }}"
             },
             {
               "column": "remind_30",
-              "fieldValue": "{{ $json.remind_30 }}"
+              "fieldValue": "={{ $json.remind_30 }}"
             },
             {
               "column": "remind_15",
-              "fieldValue": "{{ $json.remind_15 }}"
+              "fieldValue": "={{ $json.remind_15 }}"
             },
             {
               "column": "remind_now",
-              "fieldValue": "{{ $json.remind_now }}"
+              "fieldValue": "={{ $json.remind_now }}"
             },
             {
               "column": "state_version",
-              "fieldValue": "{{ $json.state_version }}"
+              "fieldValue": "={{ $json.state_version }}"
             },
             {
               "column": "sync_updated",
-              "fieldValue": "{{ $json.sync_updated }}"
+              "fieldValue": "={{ $json.sync_updated }}"
             }
           ]
         }
@@ -803,7 +873,7 @@
           },
           "conditions": [
             {
-              "leftValue": "{{ $json._diff_minutes }}",
+              "leftValue": "={{ $json._diff_minutes }}",
               "rightValue": "0",
               "operation": {
                 "type": "string",
@@ -827,7 +897,7 @@
       "typeVersion": 4.2,
       "parameters": {
         "method": "POST",
-        "url": "http://localhost:8080/{{ $json.ntfy_topic }}",
+        "url": "=http://localhost:8080/{{ $json.ntfy_topic }}",
         "authentication": "predefinedCredentialType",
         "options": {},
         "nodeCredentialType": "httpHeaderAuth",
@@ -836,11 +906,11 @@
           "parameter": [
             {
               "name": "X-Title",
-              "value": "{{ $json._moved_earlier_15 ? \"⏰ Event Moved Earlier\" : \"Event Updated\" }}"
+              "value": "={{ $json._moved_earlier_15 ? \"⏰ Event Moved Earlier\" : \"Event Updated\" }}"
             },
             {
               "name": "X-Priority",
-              "value": "{{ $json._moved_earlier_15 ? \"4\" : \"3\" }}"
+              "value": "={{ $json._moved_earlier_15 ? \"4\" : \"3\" }}"
             },
             {
               "name": "X-Tags",
@@ -906,7 +976,7 @@
           "mode": "name",
           "value": "daily_plan"
         },
-        "dataMode": "autoMapInputData",
+        "dataMode": "defineBelow",
         "columns": {
           "mappingMode": "defineBelow",
           "value": {},
@@ -920,16 +990,20 @@
         "fieldsUi": {
           "values": [
             {
+              "column": "event_id",
+              "fieldValue": "={{ $json.event_id }}"
+            },
+            {
               "column": "current_state",
-              "fieldValue": "{{ $json.new_state }}"
+              "fieldValue": "={{ $json.new_state }}"
             },
             {
               "column": "state_version",
-              "fieldValue": "{{ $json.state_version }}"
+              "fieldValue": "={{ $json.state_version }}"
             },
             {
               "column": "sync_updated",
-              "fieldValue": "{{ $now.toISO() }}"
+              "fieldValue": "={{ $now.toISO() }}"
             }
           ]
         }
@@ -952,7 +1026,7 @@
       "typeVersion": 4.2,
       "parameters": {
         "method": "POST",
-        "url": "http://localhost:8080/{{ $json.ntfy_topic }}",
+        "url": "=http://localhost:8080/{{ $json.ntfy_topic }}",
         "authentication": "predefinedCredentialType",
         "options": {},
         "nodeCredentialType": "httpHeaderAuth",
@@ -1015,7 +1089,7 @@
           },
           "conditions": [
             {
-              "leftValue": "{{ $json.should_stop_tracking }}",
+              "leftValue": "={{ $json.should_stop_tracking }}",
               "rightValue": "true",
               "operation": {
                 "type": "string",
@@ -1039,7 +1113,7 @@
       "typeVersion": 4.2,
       "parameters": {
         "method": "POST",
-        "url": "http://localhost:8080/{{ $json.ntfy_topic }}",
+        "url": "=http://localhost:8080/{{ $json.ntfy_topic }}",
         "authentication": "predefinedCredentialType",
         "options": {},
         "nodeCredentialType": "httpHeaderAuth",
@@ -1102,14 +1176,14 @@
     },
     "Loop Users": {
       "main": [
-        [],
         [
           {
             "node": "Refresh Calendar Token",
             "type": "main",
             "index": 0
           }
-        ]
+        ],
+        []
       ]
     },
     "Refresh Calendar Token": {
@@ -1124,6 +1198,17 @@
       ]
     },
     "Fetch Calendar Events": {
+      "main": [
+        [
+          {
+            "node": "Extract Calendar Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Calendar Events": {
       "main": [
         [
           {
@@ -1189,14 +1274,14 @@
       "main": [
         [
           {
-            "node": "Process Changed Events",
+            "node": "Classify New Event",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Classify New Event",
+            "node": "Process Changed Events",
             "type": "main",
             "index": 0
           }
@@ -1371,14 +1456,14 @@
       "main": [
         [
           {
-            "node": "Process Deleted Events",
+            "node": "Location Changed?",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Location Changed?",
+            "node": "Process Deleted Events",
             "type": "main",
             "index": 0
           }
@@ -1502,14 +1587,14 @@
       "main": [
         [
           {
-            "node": "Check If Tracking Should Stop",
+            "node": "Mark Event Skipped/Cancelled",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Mark Event Skipped/Cancelled",
+            "node": "Check If Tracking Should Stop",
             "type": "main",
             "index": 0
           }

@@ -42,15 +42,15 @@
           "parameter": [
             {
               "name": "lat",
-              "value": "{{ $json.lat }}"
+              "value": "={{ $json.lat }}"
             },
             {
               "name": "lon",
-              "value": "{{ $json.lng }}"
+              "value": "={{ $json.lng }}"
             },
             {
               "name": "exclude",
-              "value": "minutely,daily,alerts"
+              "value": "current,minutely,daily,alerts"
             },
             {
               "name": "units",
