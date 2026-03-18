@@ -140,13 +140,13 @@
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "parameters": {
-        "command": "/home/pi/commute-automation/tts.sh GOOGLE_HOME_IP \"{{ $(\"Parse Channels\").item.json.message }}\" en"
+        "command": "/home/pi/commute-automation/tts.sh GOOGLE_HOME_IP \"{{ $json.tts_safe_message }}\" en"
       },
       "continueOnFail": true,
       "id": "750c02b8-7a24-49a0-92e5-2cdd7305c7fd",
       "position": [
         250,
-        520
+        600
       ]
     },
     {
@@ -219,6 +219,20 @@
       "position": [
         690,
         520
+      ]
+    },
+    {
+      "name": "Sanitize TTS Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// Strip shell metacharacters from TTS message\nconst rawMessage = $json.message || '';\n\n// Allow ONLY: alphanumeric, spaces, basic punctuation (. , ? -), Unicode letters (Latin extended, Cyrillic)\nconst sanitized = rawMessage\n  .replace(/[^a-zA-Z0-9\\u00C0-\\u024F\\u0400-\\u04FF .,?\\-]/g, '')\n  .substring(0, 500);\n\nreturn {\n  json: {\n    ...$json,\n    tts_safe_message: sanitized\n  }\n};",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "a8f4c3d2-1b5e-4a7f-9c8d-3e2f1a0b9d8c",
+      "position": [
+        250,
+        440
       ]
     },
     {
@@ -306,6 +320,17 @@
       ]
     },
     "Send TTS?": {
+      "main": [
+        [
+          {
+            "node": "Sanitize TTS Message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sanitize TTS Message": {
       "main": [
         [
           {
