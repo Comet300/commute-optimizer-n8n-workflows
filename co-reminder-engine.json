@@ -447,6 +447,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Update Reminders Sent",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },

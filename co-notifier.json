@@ -140,7 +140,7 @@
       "type": "n8n-nodes-base.executeCommand",
       "typeVersion": 1,
       "parameters": {
-        "command": "/home/pi/commute-automation/tts.sh GOOGLE_HOME_IP \"{{ $json.tts_safe_message }}\" en"
+        "command": "/home/pi/commute-automation/tts.sh {{ $vars.GOOGLE_HOME_IP }} \"{{ $json.tts_safe_message }}\" en"
       },
       "continueOnFail": true,
       "id": "750c02b8-7a24-49a0-92e5-2cdd7305c7fd",
