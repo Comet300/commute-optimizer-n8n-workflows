@@ -53,7 +53,7 @@ A detailed, step-by-step walkthrough of every workflow and every node in the Com
 1. **WF1 (4 AM)** reads each user's Google Calendar, classifies events, computes departure times and weather, writes a daily plan to Google Sheets, and sends a morning digest notification.
 2. **WF2 (every 2 hours)** re-checks live traffic and updates departure times if conditions changed significantly.
 3. **WF3 (every 5 minutes)** scans the plan for due reminders and sends "get dressed", "1 hour", "30 min", "15 min", and "LEAVE NOW" notifications.
-4. **WF4 (on each GPS ping)** receives real-time location from phones, runs a state machine (planned -> should_leave -> departed -> arrived), detects at-home status, and tells the phone how often to poll next.
+4. **WF4 (on each GPS ping)** receives real-time location from phones, runs a state machine (planned -> should_leave -> departed -> arrived), detects at-home status, calculates walk-back time when away from home, and tells the phone how often to poll next. See [Tasker Setup](tasker-setup.md) for phone configuration.
 5. **WF8 (every 30 minutes)** catches mid-day calendar changes -- new events, moved events, deleted events -- and updates the plan accordingly.
 6. **WF5a (weekly)** and **WF5b (monthly)** handle data retention and statistics.
 7. **WF6** catches errors from all workflows and alerts.
@@ -613,17 +613,32 @@ Priority 5, title "You should have left!", warning tag.
 **Step 26b: Stop Tracking** (`httpRequest` -- POST to ntfy)
 JSON body with `action: "stop_tracking"`. Priority 2, stop_sign tag.
 
-**Step 27: At-Home Update Needed?** (`if`)
+**Step 27: Location Update Needed?** (`if`)
+Checks if any events need `at_home` or `away_walk_back_min` updated (at-home status changed or walk-back time shifted by >=3 min).
 
 > **If TRUE:**
 
-**Step 28: Prepare At-Home Updates** (`code`)
-Outputs one item per event needing at_home update.
+**Step 28: Prepare Location Updates** (`code`)
+Outputs one item per event needing location state update, with `at_home` flag and `away_walk_back_min` value.
 
-**Step 29: Loop At-Home Updates** (`splitInBatches`, batch size 1)
+**Step 29: Loop Location Updates** (`splitInBatches`, batch size 1)
 
-**Step 30: Update At-Home Flag** (`googleSheets` -- update by event_id)
-Sets the `at_home` column. Loops back to Step 29.
+**Step 30: Update Location State** (`googleSheets` -- update by event_id)
+Sets the `at_home` and `away_walk_back_min` columns. Loops back to Step 29.
+
+> **When loop completes:**
+
+**Step 31: Away Notify?** (`if`)
+Checks if user just left home or walk-back increased significantly (>=5 min).
+
+> **If TRUE:**
+
+**Step 32: Send Away Alert** (`httpRequest` -- POST to ntfy)
+Sends push notification with walk-back estimate and "return by" time. Priority 4, walking tag.
+
+#### Away-from-home adjustment
+
+On each GPS ping, WF4 checks if the user is away from home (via WiFi + GPS). If away with upcoming home-origin events, it estimates walk-back time using haversine distance (capped at 60 min) and stores `away_walk_back_min` in the daily plan. WF3 subtracts this offset from departure times, shifting all reminders earlier. State transitions (`should_leave`, departure detection) also use traffic-updated departure adjusted by walk-back. A push notification fires when the user first leaves home or when the walk-back estimate increases significantly. Walk-back only applies to events with `origin_type = 'home'` -- event chain events (A -> B) are unaffected.
 
 ---
 

@@ -240,7 +240,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "\n// --- Required n8n Variables check ---\nconst requiredVars = ['HOME_COORDS', 'HOME_RADIUS_METERS', 'DRESS_REMINDER_INTERVALS', 'TRACKING_INTERVAL_TIERS'];\nconst missingVars = requiredVars.filter(k => !$vars[k]);\nif (missingVars.length) {\n  throw new Error(`Missing n8n Variables: ${missingVars.join(', ')}. Set them in Settings → Variables before activating workflows.`);\n}\n\n// WF4 State Machine — processes location updates and transitions event states\nconst body = $('Location Update').item.json.body;\nconst userLat = parseFloat(body.lat);\nconst userLng = parseFloat(body.lng);\nconst accuracy = parseFloat(body.accuracy) || 50;\nconst userId = body.user_id;\n\n// Validate user_id against allowed list (opt-in via ALLOWED_USER_IDS variable)\nconst allowedUsers = ($vars.ALLOWED_USER_IDS || '').split(',').map(s => s.trim()).filter(Boolean);\nif (allowedUsers.length > 0 && !allowedUsers.includes(userId)) {\n  return { json: { action: 'none', reason: 'unauthorized user_id', recommended_interval: 15, user_is_at_home: false, at_home_source: 'unknown', at_home_updates: null } };\n}\nconst now = new Date();\n\n// Read all daily_plan rows\nconst allRows = $input.all().map(i => i.json);\nconst today = DateTime.now().setZone('Europe/Bucharest').toISODate(); // timezone-aware\n\n// Filter to this user's active events today\nconst terminalStates = ['arrived', 'cancelled', 'skipped', 'expired'];\nconst trackableEvents = allRows.filter(row =>\n  row.user_id === userId\n  && row.plan_date === today\n  && !terminalStates.includes(row.current_state)\n  && (row.is_online !== 'TRUE' && row.is_online !== true)\n  && row.location_coords\n);\n\nif (trackableEvents.length === 0) {\n  return { json: { action: 'none', reason: 'no trackable events', recommended_interval: 15, user_is_at_home: false, at_home_source: 'unknown', at_home_updates: null } };\n}\n\n// Pick the event with the nearest departure_time\ntrackableEvents.sort((a, b) => new Date(a.departure_time) - new Date(b.departure_time));\nconst event = trackableEvents[0];\n\n// --- Consent-safety gate ---\nif (event.cancel_requested_at) {\n  const cancelTime = new Date(event.cancel_requested_at);\n  const sixtyMinAgo = new Date(now.getTime() - 60 * 60 * 1000);\n  if (cancelTime > sixtyMinAgo) {\n    return { json: {\n      action: 'force_cancel',\n      event_id: event.event_id,\n      user_id: userId,\n      current_state: 'cancelled',\n      state_version: (parseInt(event.state_version) || 0) + 1,\n      expected_previous_version: parseInt(event.state_version) || 0,\n      stop_tracking: true,\n      ntfy_topic: event.ntfy_topic || allRows.find(r => r.user_id === userId)?.ntfy_topic,\n      recommended_interval: 15,\n      user_is_at_home: false,\n      at_home_source: 'unknown',\n      at_home_updates: null\n    }};\n  }\n}\n\n// --- Haversine distance helper ---\nfunction haversine(lat1, lng1, lat2, lng2) {\n  const R = 6371000; // meters\n  const dLat = (lat2 - lat1) * Math.PI / 180;\n  const dLng = (lng2 - lng1) * Math.PI / 180;\n  const a = Math.sin(dLat/2)**2 +\n    Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLng/2)**2;\n  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));\n}\n\n// Parse coordinates\nconst [originLat, originLng] = (event.origin_coords || '').split(',').map(Number);\nconst [destLat, destLng] = (event.location_coords || '').split(',').map(Number);\nconst depTime = new Date(event.traffic_updated_departure || event.departure_time);\nconst currentState = event.current_state;\nconst stateVersion = parseInt(event.state_version) || 0;\n\nlet newState = currentState;\nlet shouldUpdate = false;\n\n// --- State transitions ---\nif (currentState === 'planned' && now >= new Date(depTime.getTime() - 20 * 60 * 1000)) {\n  newState = 'should_leave';\n  shouldUpdate = true;\n}\n\n// Departure detection: user is >500m from origin AND within 30 min of departure\nconst distFromOrigin = haversine(userLat, userLng, originLat, originLng);\nconst departureThreshold = Math.min(Math.max(500, accuracy * 2), 2000);\n\n// 2-sample departure confirmation: require sustained >500m to prevent GPS jitter false departures\nconst departurePending = event.departure_pending === 'TRUE' || event.departure_pending === true;\nlet departurePendingWrite = false;\n\nif ((currentState === 'planned' || currentState === 'should_leave')\n    && distFromOrigin > departureThreshold\n    && now >= new Date(depTime.getTime() - 30 * 60 * 1000)) {\n  if (departurePending) {\n    // Second consecutive reading >500m — confirmed departure\n    newState = 'departed';\n    shouldUpdate = true;\n    departurePendingWrite = false;\n  } else {\n    // First reading >500m — mark pending, confirm on next update\n    departurePendingWrite = true;\n  }\n} else if (departurePending) {\n  // User back within range — clear pending (was GPS jitter)\n  departurePendingWrite = false;\n}\n\n// Arrival detection: user is within max(200m, accuracy*2) of event location\n// Single check is sufficient — the dynamic radius (max(200m, accuracy*2)) already\n// absorbs GPS jitter by expanding the threshold when accuracy is poor\nconst distFromDest = haversine(userLat, userLng, destLat, destLng);\nconst arrivalRadius = Math.min(Math.max(200, accuracy * 2), 1000);\nif (currentState === 'departed' && distFromDest <= arrivalRadius) {\n  newState = 'arrived';\n  shouldUpdate = true;\n}\n\n// Time-based arrival fallback: if departed and past event start + 10 min,\n// auto-transition to arrived. Prevents stuck \"departed\" state when GPS\n// can't detect arrival (underground parking, indoor venues, poor signal).\nif (currentState === 'departed' && event.start_time) {\n  const eventStart = new Date(event.start_time);\n  const fallbackTime = new Date(eventStart.getTime() + 10 * 60 * 1000);\n  if (now >= fallbackTime) {\n    newState = 'arrived';\n    shouldUpdate = true;\n  }\n}\n\n// Should-leave alert: still home past departure time\nlet sendUrgentAlert = false;\n// Urgent alert: only fire during first 15 min after departure time (prevents spam on every GPS ping)\nconst urgentWindowEnd = new Date(depTime.getTime() + 15 * 60 * 1000);\nif (currentState === 'should_leave' && distFromOrigin < 200 && now > depTime && now < urgentWindowEnd) {\n  sendUrgentAlert = true;\n}\n\n// Check if this is the last trackable event\nconst remainingAfterThis = trackableEvents.filter(e => e.event_id !== event.event_id);\nconst stopTracking = newState === 'arrived' && remainingAfterThis.length === 0;\n\n// Multi-event origin recalculation (on arrival)\n// When arriving at event A, update the origin for ALL remaining events (B, C, D, ...)\n// This handles chains like Home → A → B → C: arriving at A updates B and C's origin to A's location.\n// ALL remaining events get updated (not just those with origin_type !== 'event') because\n// the most recent arrival is always the correct origin — e.g., arriving at B should update\n// C's origin to B's location even though A already set it to A's location.\nlet eventsToUpdate = [];\nif (newState === 'arrived' && remainingAfterThis.length > 0) {\n  for (const remainingEvent of remainingAfterThis) {\n    eventsToUpdate.push({\n      event_id: remainingEvent.event_id,\n      new_origin_coords: event.location_coords,\n      new_origin_type: 'event'\n    });\n  }\n}\n\n// --- At-home detection (runs on every location update) ---\n// WiFi-first: if Tasker reports WiFi connection to home SSID, trust it over GPS.\n// WiFi is cheaper, faster, and works indoors where GPS is unreliable.\nconst HOME_COORDS = $vars.HOME_COORDS;                    // e.g. \"44.4268,26.1025\"\nconst HOME_RADIUS_METERS = parseInt($vars.HOME_RADIUS_METERS); // e.g. \"200\" → 200\nconst WIFI_FRESHNESS_MS = 20 * 60 * 1000; // 20 minutes — WiFi signal considered stale after this\nconst [homeLat, homeLng] = HOME_COORDS.split(',').map(Number);\n\nconst wifiAtHome = body.wifi_at_home;\nconst wifiAtHomeAt = body.wifi_at_home_at ? parseInt(body.wifi_at_home_at) * 1000 : null; // Tasker sends epoch seconds\nconst wifiIsFresh = wifiAtHomeAt && (now.getTime() - wifiAtHomeAt) < WIFI_FRESHNESS_MS;\n\nlet userIsAtHome;\nlet atHomeSource;\nif (wifiIsFresh && (wifiAtHome === '1' || wifiAtHome === 1 || wifiAtHome === true || wifiAtHome === 'true')) {\n  userIsAtHome = true;\n  atHomeSource = 'wifi';\n} else if (wifiIsFresh && (wifiAtHome === '0' || wifiAtHome === 0 || wifiAtHome === false || wifiAtHome === 'false')) {\n  // WiFi explicitly says not at home — still fall through to GPS as a safety check.\n  // User might be in the yard (no WiFi but within 200m). GPS decides.\n  const distFromHome = haversine(userLat, userLng, homeLat, homeLng);\n  userIsAtHome = distFromHome <= HOME_RADIUS_METERS;\n  atHomeSource = 'gps_after_wifi_disconnect';\n} else {\n  // No WiFi data or stale — pure GPS fallback\n  const distFromHome = haversine(userLat, userLng, homeLat, homeLng);\n  userIsAtHome = distFromHome <= HOME_RADIUS_METERS;\n  atHomeSource = 'gps';\n}\n\n// At-home hysteresis for GPS: if GPS disagrees with stored at_home,\n// only accept if we're already in a \"pending change\" state (tracked via at_home_pending).\nconst prevAtHome = event.at_home === 'TRUE' || event.at_home === true;\nconst atHomePending = event.at_home_pending === 'TRUE' || event.at_home_pending === true;\nlet atHomePendingWrite = false;\n\nif (atHomeSource !== 'wifi' && userIsAtHome !== prevAtHome) {\n  if (!atHomePending) {\n    // First GPS disagreement — suppress change, mark pending for next reading\n    userIsAtHome = prevAtHome;\n    atHomeSource = atHomeSource + '_pending';\n    atHomePendingWrite = true;\n  } else {\n    // Second consecutive GPS disagreement — accept the change, clear pending\n    atHomePendingWrite = false;\n  }\n} else {\n  // GPS agrees with stored state OR WiFi-based — clear any pending flag\n  atHomePendingWrite = false;\n}\n\n// Find all non-terminal physical events for this user today whose at_home differs\nconst eventsNeedingAtHomeUpdate = allRows.filter(row =>\n  row.user_id === userId\n  && row.plan_date === today\n  && !terminalStates.includes(row.current_state)\n  && (row.is_online !== 'TRUE' && row.is_online !== true)\n  && ((row.at_home === 'TRUE' || row.at_home === true) !== userIsAtHome)\n);\n\n// --- Dynamic polling interval calculation ---\n// Uses TRACKING_INTERVAL_TIERS from $vars (format: \"60:20,30:10,15:5,5:3\")\n// Each tier is \"minutes_until_departure:interval_minutes\", sorted ascending by threshold (tightest tier matched first).\n// Falls back to sensible defaults if parsing fails.\nconst tierStr = $vars.TRACKING_INTERVAL_TIERS; // e.g. \"60:20,30:10,15:5,5:3\"\nlet intervalTiers = [\n  { withinMin: 60, interval: 20 },\n  { withinMin: 30, interval: 10 },\n  { withinMin: 15, interval: 5 },\n  { withinMin: 5, interval: 3 }\n];\nif (tierStr) {\n  intervalTiers = tierStr.split(',').map(pair => {\n    const [withinMin, interval] = pair.split(':').map(Number);\n    return { withinMin, interval };\n  }).filter(t => !isNaN(t.withinMin) && !isNaN(t.interval))\n    .sort((a, b) => a.withinMin - b.withinMin); // ascending — tightest tier first\n}\n\nconst minsToDeparture = (depTime.getTime() - now.getTime()) / 60000;\nlet recommendedInterval;\nif (newState === 'departed') {\n  // Commuting — use the tightest tier (smallest interval) for arrival detection\n  recommendedInterval = intervalTiers[0]?.interval || 5;\n} else if (remainingAfterThis.length === 0 && newState === 'arrived') {\n  recommendedInterval = 15;  // last event done — tracking will stop soon\n} else {\n  // Find matching tier: first tier (tightest) whose threshold >= minsToDeparture\n  recommendedInterval = intervalTiers[intervalTiers.length - 1]?.interval || 20; // default to idlest\n  for (const tier of intervalTiers) {\n    if (minsToDeparture <= tier.withinMin) {\n      recommendedInterval = tier.interval;\n      break;\n    }\n  }\n}\n\n// Detect if pending flags changed from stored values (need a write even without state transition)\nconst pendingChanged = departurePendingWrite !== departurePending || atHomePendingWrite !== atHomePending;\n\nreturn { json: {\n  action: shouldUpdate ? 'update_state' : (sendUrgentAlert ? 'urgent_alert' : (pendingChanged ? 'update_pending' : 'none')),\n  event_id: event.event_id,\n  user_id: userId,\n  title: event.title,\n  current_state: newState,\n  previous_state: currentState,\n  state_version: shouldUpdate ? stateVersion + 1 : stateVersion,\n  expected_previous_version: stateVersion,  // for optimistic concurrency check before write\n  stop_tracking: stopTracking,\n  send_urgent_alert: sendUrgentAlert,\n  ntfy_topic: event.ntfy_topic || allRows.find(r => r.user_id === userId)?.ntfy_topic,\n  events_to_update: eventsToUpdate.length > 0 ? JSON.stringify(eventsToUpdate) : null,\n  departed_at: event.departed_at || null,  // pass through for commute_history calc\n  arrival_data: newState === 'arrived' ? JSON.stringify({\n    planned_departure: event.departure_time,\n    actual_departure: event.departed_at || null,\n    planned_travel_min: parseInt(event.commute_minutes) || 0,\n    actual_travel_min: event.departed_at\n      ? Math.round((now.getTime() - new Date(event.departed_at).getTime()) / 60000)\n      : null,\n    commute_mode: event.commute_mode,\n    destination_coords: event.location_coords,\n    origin_coords: event.origin_coords\n  }) : null,\n  remaining_events: remainingAfterThis.length,\n  user_is_at_home: userIsAtHome,\n  at_home_source: atHomeSource,\n  at_home_updates: eventsNeedingAtHomeUpdate.length > 0\n    ? JSON.stringify(eventsNeedingAtHomeUpdate.map(r => r.event_id))\n    : null,\n  departure_pending: departurePendingWrite,\n  at_home_pending: atHomePendingWrite,\n  recommended_interval: recommendedInterval\n}};\n",
+        "jsCode": "\n// --- Required n8n Variables check ---\nconst requiredVars = ['HOME_COORDS', 'HOME_RADIUS_METERS', 'DRESS_REMINDER_INTERVALS', 'TRACKING_INTERVAL_TIERS'];\nconst missingVars = requiredVars.filter(k => !$vars[k]);\nif (missingVars.length) {\n  throw new Error(`Missing n8n Variables: ${missingVars.join(', ')}. Set them in Settings → Variables before activating workflows.`);\n}\n\n// WF4 State Machine — processes location updates and transitions event states\nconst body = $('Location Update').item.json.body;\nconst userLat = parseFloat(body.lat);\nconst userLng = parseFloat(body.lng);\nconst accuracy = parseFloat(body.accuracy) || 50;\nconst userId = body.user_id;\nconst now = new Date();\n\n// Read all daily_plan rows\nconst allRows = $input.all().map(i => i.json);\nconst today = DateTime.now().setZone('Europe/Bucharest').toISODate(); // timezone-aware\n\n// Filter to this user's active events today\nconst terminalStates = ['arrived', 'cancelled', 'skipped', 'expired'];\nconst trackableEvents = allRows.filter(row =>\n  row.user_id === userId\n  && row.plan_date === today\n  && !terminalStates.includes(row.current_state)\n  && (row.is_online !== 'TRUE' && row.is_online !== true)\n  && row.location_coords\n);\n\nif (trackableEvents.length === 0) {\n  return { json: { action: 'none', reason: 'no trackable events', recommended_interval: 15, user_is_at_home: false, at_home_source: 'unknown', location_updates: null, away_walk_back_min: 0, away_walk_back_changed: false, away_notify: false, effective_departure: null, departure_pending: false, at_home_pending: false } };\n}\n\n// Pick the event with the nearest departure_time\ntrackableEvents.sort((a, b) => new Date(a.departure_time) - new Date(b.departure_time));\nconst event = trackableEvents[0];\n\n// --- Consent-safety gate ---\nif (event.cancel_requested_at) {\n  const cancelTime = new Date(event.cancel_requested_at);\n  const sixtyMinAgo = new Date(now.getTime() - 60 * 60 * 1000);\n  if (cancelTime > sixtyMinAgo) {\n    return { json: {\n      action: 'force_cancel',\n      event_id: event.event_id,\n      user_id: userId,\n      current_state: 'cancelled',\n      state_version: (parseInt(event.state_version) || 0) + 1,\n      expected_previous_version: parseInt(event.state_version) || 0,\n      stop_tracking: true,\n      ntfy_topic: event.ntfy_topic || allRows.find(r => r.user_id === userId)?.ntfy_topic,\n      recommended_interval: 15,\n      user_is_at_home: false,\n      at_home_source: 'unknown',\n      location_updates: null,\n      away_walk_back_min: 0,\n      away_walk_back_changed: false,\n      away_notify: false,\n      effective_departure: null,\n      departure_pending: false,\n      at_home_pending: false\n    }};\n  }\n}\n\n// --- Haversine distance helper ---\nfunction haversine(lat1, lng1, lat2, lng2) {\n  const R = 6371000; // meters\n  const dLat = (lat2 - lat1) * Math.PI / 180;\n  const dLng = (lng2 - lng1) * Math.PI / 180;\n  const a = Math.sin(dLat/2)**2 +\n    Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLng/2)**2;\n  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));\n}\n\n// Home coordinates (needed early for walk-back gate in state transitions)\nconst HOME_COORDS = $vars.HOME_COORDS;                    // e.g. \"44.4268,26.1025\"\nconst HOME_RADIUS_METERS = parseInt($vars.HOME_RADIUS_METERS); // e.g. \"200\" → 200\nconst [homeLat, homeLng] = HOME_COORDS.split(',').map(Number);\n\n// Parse coordinates\nconst [originLat, originLng] = (event.origin_coords || '').split(',').map(Number);\nconst [destLat, destLng] = (event.location_coords || '').split(',').map(Number);\n// Use traffic-updated departure if available (consistent with WF3 reminder engine)\nconst bestDepTime = new Date(event.traffic_updated_departure || event.departure_time);\nconst currentState = event.current_state;\nconst stateVersion = parseInt(event.state_version) || 0;\n\n// Effective departure accounts for walk-back time when away from home\n// Only applies to events departing from home (not event chains like A → B)\nconst storedWalkBack = (event.origin_type === 'home' || (event.origin_coords || '') === HOME_COORDS)\n  ? (parseInt(event.away_walk_back_min) || 0)\n  : 0;\nconst effectiveDepTime = new Date(bestDepTime.getTime() - storedWalkBack * 60 * 1000);\n\nlet newState = currentState;\nlet shouldUpdate = false;\n\n// --- State transitions (using effective departure) ---\nif (currentState === 'planned' && now >= new Date(effectiveDepTime.getTime() - 20 * 60 * 1000)) {\n  newState = 'should_leave';\n  shouldUpdate = true;\n}\n\n// Departure detection: user is >500m from origin AND within 30 min of effective departure\nconst distFromOrigin = haversine(userLat, userLng, originLat, originLng);\nconst departureThreshold = Math.max(500, accuracy * 2);\n\n// 2-sample departure confirmation: require sustained >500m to prevent GPS jitter false departures\nconst departurePending = event.departure_pending === 'TRUE' || event.departure_pending === true;\nlet departurePendingWrite = false;\n\nif ((currentState === 'planned' || currentState === 'should_leave')\n    && distFromOrigin > departureThreshold\n    && now >= new Date(effectiveDepTime.getTime() - 30 * 60 * 1000)) {\n  if (departurePending) {\n    newState = 'departed';\n    shouldUpdate = true;\n    departurePendingWrite = false;\n  } else {\n    departurePendingWrite = true;\n  }\n} else if (departurePending) {\n  departurePendingWrite = false;\n}\n\n// Arrival detection: user is within max(200m, accuracy*2) of event location\n// Single check is sufficient — the dynamic radius (max(200m, accuracy*2)) already\n// absorbs GPS jitter by expanding the threshold when accuracy is poor\nconst distFromDest = haversine(userLat, userLng, destLat, destLng);\nconst arrivalRadius = Math.max(200, accuracy * 2);\nif (currentState === 'departed' && distFromDest <= arrivalRadius) {\n  newState = 'arrived';\n  shouldUpdate = true;\n}\n\n// Time-based arrival fallback: if departed and past event start + 10 min,\n// auto-transition to arrived (prevents stuck \"departed\" on poor GPS)\nif (currentState === 'departed' && event.start_time) {\n  const eventStart = new Date(event.start_time);\n  const fallbackTime = new Date(eventStart.getTime() + 10 * 60 * 1000);\n  if (now >= fallbackTime) {\n    newState = 'arrived';\n    shouldUpdate = true;\n  }\n}\n\n// Should-leave alert: still home past departure time\nlet sendUrgentAlert = false;\nif (currentState === 'should_leave' && distFromOrigin < 200 && now > bestDepTime) {\n  sendUrgentAlert = true;\n}\n\n// Check if this is the last trackable event\nconst remainingAfterThis = trackableEvents.filter(e => e.event_id !== event.event_id);\nconst stopTracking = newState === 'arrived' && remainingAfterThis.length === 0;\n\n// Multi-event origin recalculation (on arrival)\n// When arriving at event A, update the origin for ALL remaining events (B, C, D, ...)\n// This handles chains like Home → A → B → C: arriving at A updates B and C's origin to A's location.\n// ALL remaining events get updated (not just those with origin_type !== 'event') because\n// the most recent arrival is always the correct origin — e.g., arriving at B should update\n// C's origin to B's location even though A already set it to A's location.\nlet eventsToUpdate = [];\nif (newState === 'arrived' && remainingAfterThis.length > 0) {\n  for (const remainingEvent of remainingAfterThis) {\n    eventsToUpdate.push({\n      event_id: remainingEvent.event_id,\n      new_origin_coords: event.location_coords,\n      new_origin_type: 'event'\n    });\n  }\n}\n\n// --- At-home detection (runs on every location update) ---\n// WiFi-first: if Tasker reports WiFi connection to home SSID, trust it over GPS.\n// WiFi is cheaper, faster, and works indoors where GPS is unreliable.\nconst WIFI_FRESHNESS_MS = 20 * 60 * 1000; // 20 minutes — WiFi signal considered stale after this\n\nconst wifiAtHome = body.wifi_at_home;\nconst wifiAtHomeAt = body.wifi_at_home_at ? parseInt(body.wifi_at_home_at) * 1000 : null; // Tasker sends epoch seconds\nconst wifiIsFresh = wifiAtHomeAt && (now.getTime() - wifiAtHomeAt) < WIFI_FRESHNESS_MS;\n\nlet userIsAtHome;\nlet atHomeSource;\nif (wifiIsFresh && (wifiAtHome === '1' || wifiAtHome === 1 || wifiAtHome === true || wifiAtHome === 'true')) {\n  userIsAtHome = true;\n  atHomeSource = 'wifi';\n} else if (wifiIsFresh && (wifiAtHome === '0' || wifiAtHome === 0 || wifiAtHome === false || wifiAtHome === 'false')) {\n  // WiFi explicitly says not at home — still fall through to GPS as a safety check.\n  // User might be in the yard (no WiFi but within 200m). GPS decides.\n  const distFromHome = haversine(userLat, userLng, homeLat, homeLng);\n  userIsAtHome = distFromHome <= HOME_RADIUS_METERS;\n  atHomeSource = 'gps_after_wifi_disconnect';\n} else {\n  // No WiFi data or stale — pure GPS fallback\n  const distFromHome = haversine(userLat, userLng, homeLat, homeLng);\n  userIsAtHome = distFromHome <= HOME_RADIUS_METERS;\n  atHomeSource = 'gps';\n}\n\n// At-home hysteresis for GPS: require 2 consecutive readings to change at_home\nconst prevAtHome = event.at_home === 'TRUE' || event.at_home === true;\nconst atHomePending = event.at_home_pending === 'TRUE' || event.at_home_pending === true;\nlet atHomePendingWrite = false;\n\nif (atHomeSource !== 'wifi' && userIsAtHome !== prevAtHome) {\n  if (!atHomePending) {\n    userIsAtHome = prevAtHome;\n    atHomeSource = atHomeSource + '_pending';\n    atHomePendingWrite = true;\n  } else {\n    atHomePendingWrite = false;\n  }\n} else {\n  atHomePendingWrite = false;\n}\n\n// Away-from-home urgent alert: away and past effective departure\nif (!userIsAtHome && currentState === 'should_leave' && now > effectiveDepTime) {\n  sendUrgentAlert = true;\n}\n\n// --- Away-from-home walk-back calculation ---\n// When user is away from home with upcoming events departing from home,\n// estimate walk-back time. Only applies when origin_type is 'home' —\n// event chains (A → B) don't need walk-back since user is already at origin.\nlet awayWalkBackMin = 0;\nlet awayWalkBackChanged = false;\nlet awayNotify = false;\n\nconst eventDepartsFromHome = event.origin_type === 'home'\n  || (event.origin_coords || '') === HOME_COORDS;\n\nif (!userIsAtHome && trackableEvents.length > 0 && eventDepartsFromHome) {\n  const distFromHome = haversine(userLat, userLng, homeLat, homeLng);\n  const rawWalkBack = Math.ceil(distFromHome / 80); // 80 m/min ≈ 4.8 km/h walking\n  awayWalkBackMin = (rawWalkBack > 5) ? Math.min(rawWalkBack, 60) : 0;\n\n  const prevWalkBack = parseInt(event.away_walk_back_min) || 0;\n  awayWalkBackChanged = Math.abs(awayWalkBackMin - prevWalkBack) >= 3;\n\n  if (awayWalkBackMin > 0 && (prevWalkBack === 0 || (awayWalkBackMin - prevWalkBack) >= 5)) {\n    awayNotify = true;\n  }\n}\n\n// When returning home or event doesn't depart from home, clear the offset\nif (userIsAtHome || !eventDepartsFromHome) {\n  const prevWalkBack = parseInt(event.away_walk_back_min) || 0;\n  if (prevWalkBack > 0) {\n    awayWalkBackMin = 0;\n    awayWalkBackChanged = true;\n  }\n}\n\n// Combined location-state updates: fires when EITHER at_home or walk_back changes\nconst eventsNeedingLocationUpdate = allRows.filter(row =>\n  row.user_id === userId\n  && row.plan_date === today\n  && !terminalStates.includes(row.current_state)\n  && (row.is_online !== 'TRUE' && row.is_online !== true)\n  && (\n    ((row.at_home === 'TRUE' || row.at_home === true) !== userIsAtHome)\n    || awayWalkBackChanged\n  )\n);\n\n// --- Dynamic polling interval calculation ---\n// Uses TRACKING_INTERVAL_TIERS from $vars (format: \"60:20,30:10,15:5,5:3\")\n// Each tier is \"minutes_until_departure:interval_minutes\", sorted descending by threshold.\n// Falls back to sensible defaults if parsing fails.\nconst tierStr = $vars.TRACKING_INTERVAL_TIERS; // e.g. \"60:20,30:10,15:5,5:3\"\nlet intervalTiers = [\n  { withinMin: 60, interval: 20 },\n  { withinMin: 30, interval: 10 },\n  { withinMin: 15, interval: 5 },\n  { withinMin: 5, interval: 3 }\n];\nif (tierStr) {\n  intervalTiers = tierStr.split(',').map(pair => {\n    const [withinMin, interval] = pair.split(':').map(Number);\n    return { withinMin, interval };\n  }).filter(t => !isNaN(t.withinMin) && !isNaN(t.interval))\n    .sort((a, b) => b.withinMin - a.withinMin); // descending\n}\n\nconst minsToDeparture = (bestDepTime.getTime() - now.getTime()) / 60000;\nlet recommendedInterval;\nif (newState === 'departed') {\n  // Commuting — use the tightest tier (smallest interval) for arrival detection\n  recommendedInterval = intervalTiers[intervalTiers.length - 1]?.interval || 5;\n} else if (remainingAfterThis.length === 0 && newState === 'arrived') {\n  recommendedInterval = 15;  // last event done — tracking will stop soon\n} else {\n  // Find matching tier: first tier whose threshold is >= minsToDeparture\n  recommendedInterval = intervalTiers[0]?.interval || 20; // default to idlest\n  for (const tier of intervalTiers) {\n    if (minsToDeparture <= tier.withinMin) {\n      recommendedInterval = tier.interval;\n      break;\n    }\n  }\n}\n\n// Away from home with upcoming events → tighter polling for walk-back tracking\nif (!userIsAtHome && trackableEvents.length > 0\n    && newState !== 'departed' && newState !== 'arrived') {\n  recommendedInterval = Math.min(recommendedInterval, 5);\n}\n\n// Detect if pending flags changed (need write even without state transition)\nconst pendingChanged = departurePendingWrite !== departurePending || atHomePendingWrite !== atHomePending;\n\nreturn { json: {\n  action: shouldUpdate ? 'update_state' : (sendUrgentAlert ? 'urgent_alert' : (pendingChanged ? 'update_pending' : 'none')),\n  event_id: event.event_id,\n  user_id: userId,\n  title: event.title,\n  current_state: newState,\n  previous_state: currentState,\n  state_version: shouldUpdate ? stateVersion + 1 : stateVersion,\n  expected_previous_version: stateVersion,  // for optimistic concurrency check before write\n  stop_tracking: stopTracking,\n  send_urgent_alert: sendUrgentAlert,\n  ntfy_topic: event.ntfy_topic || allRows.find(r => r.user_id === userId)?.ntfy_topic,\n  events_to_update: eventsToUpdate.length > 0 ? JSON.stringify(eventsToUpdate) : null,\n  departed_at: event.departed_at || null,  // pass through for commute_history calc\n  arrival_data: newState === 'arrived' ? JSON.stringify({\n    planned_departure: event.departure_time,\n    actual_departure: event.departed_at || null,\n    planned_travel_min: parseInt(event.commute_minutes) || 0,\n    actual_travel_min: event.departed_at\n      ? Math.round((now.getTime() - new Date(event.departed_at).getTime()) / 60000)\n      : null,\n    commute_mode: event.commute_mode,\n    destination_coords: event.location_coords,\n    origin_coords: event.origin_coords\n  }) : null,\n  remaining_events: remainingAfterThis.length,\n  user_is_at_home: userIsAtHome,\n  at_home_source: atHomeSource,\n  location_updates: eventsNeedingLocationUpdate.length > 0\n    ? JSON.stringify(eventsNeedingLocationUpdate.map(r => r.event_id))\n    : null,\n  away_walk_back_min: awayWalkBackMin,\n  away_walk_back_changed: awayWalkBackChanged,\n  away_notify: awayNotify,\n  effective_departure: (event.traffic_updated_departure || event.departure_time),\n  departure_pending: departurePendingWrite,\n  at_home_pending: atHomePendingWrite,\n  recommended_interval: recommendedInterval\n}};\n",
         "mode": "runOnceForAllItems"
       },
       "id": "919425f3-2ea5-4d34-a7d4-f737201703fc",
@@ -353,7 +353,7 @@
                   "conditions": [
                     {
                       "leftValue": "={{ $json.action }}",
-                      "rightValue": "update_pending",
+                      "rightValue": "none",
                       "operation": {
                         "type": "string",
                         "operation": "equals",
@@ -376,7 +376,7 @@
                   "conditions": [
                     {
                       "leftValue": "={{ $json.action }}",
-                      "rightValue": "none",
+                      "rightValue": "update_pending",
                       "operation": {
                         "type": "string",
                         "operation": "equals",
@@ -386,11 +386,10 @@
                   ],
                   "combinator": "and"
                 }
-              },
-              "output": 3
+              }
             }
           ],
-          "fallbackOutput": 3
+          "fallbackOutput": 2
         }
       },
       "id": "d0129110-af0f-4ed7-86f8-46fd6e235b78",
@@ -875,7 +874,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "\n// Recalculate reminder times with the new departure time\nconst departure = $('Recalculate Departure').item.json;\nconst weather = $json; // from Sub-WF B\nconst eventRow = $('Read Event Row').item.json;\nconst update = $('Loop Events To Update').item.json;\n\nif (departure.error) {\n  // Sub-WF A failed — keep existing departure, pass through existing values to prevent blanking\n  return { json: {\n    event_id: update.event_id,\n    origin_coords: update.new_origin_coords,\n    origin_type: update.new_origin_type,\n    state_version: (parseInt(eventRow.state_version) || 0) + 1,\n    departure_changed: false,\n    departure_time: eventRow.departure_time || '',\n    commute_minutes: eventRow.commute_minutes || '',\n    commute_mode: eventRow.commute_mode || '',\n    weather_worst: eventRow.weather_worst || '',\n    clothing_advice: eventRow.clothing_advice || '',\n    remind_dressed: eventRow.remind_dressed || '',\n    remind_60: eventRow.remind_60 || '',\n    remind_30: eventRow.remind_30 || '',\n    remind_15: eventRow.remind_15 || '',\n    remind_now: eventRow.remind_now || '',\n    reminders_sent: eventRow.reminders_sent || ''\n  }};\n}\n\nconst depTime = new Date(departure.departure_time);\nconst fourAM = new Date(depTime);\nfourAM.setHours(4, 0, 0, 0);\n\n// Recalculate remind_dressed using DRESS_REMINDER_INTERVALS, filtered by dress_cap\nconst ALL_DRESS_INTERVALS = $vars.DRESS_REMINDER_INTERVALS.split(',').map(s => s.trim()).filter(Boolean).map(Number).filter(n => !isNaN(n));\nconst dressCap = parseInt(eventRow.dress_cap) || 0;\nconst DRESS_INTERVALS = dressCap > 0\n  ? ALL_DRESS_INTERVALS.filter(n => n <= dressCap)\n  : ALL_DRESS_INTERVALS;\nconst maxInterval = DRESS_INTERVALS.length > 0 ? Math.max(...DRESS_INTERVALS) : 0;\nconst dressedEarliest = maxInterval > 0\n  ? new Date(depTime.getTime() - maxInterval * 60 * 1000)\n  : depTime;\nconst remindDressed = dressedEarliest < fourAM ? fourAM : dressedEarliest;\n\n// Note: at_home is NOT recalculated here. It's maintained by WF4's main flow\n// (Nodes 12a-12c) based on real-time GPS position, not event locations.\n// The at_home column is preserved by omitting it from this upsert.\n\n// Determine which reminders have already been sent.\n// When origin changes (e.g., arrived at event A, now heading to event B),\n// the departure time shifts. We KEEP already-fired standard reminders (remind_60, remind_30, etc.)\n// because they were correct at the time they fired. We CLEAR unfired dress reminders\n// (remind_dressed_*) since the clothing advice may change with the new origin's weather.\nconst alreadySent = (eventRow.reminders_sent || '').split(',').map(s => s.trim()).filter(Boolean);\n\n// Clear unfired dress reminders — they need to re-fire with updated clothing advice\nconst firedNonDress = alreadySent.filter(r => !r.startsWith('remind_dressed'));\nconst firedDress = alreadySent.filter(r => r.startsWith('remind_dressed'));\n// Keep fired dress reminders (they already went to the user), only new dress times will re-fire\nconst keptReminders = [...firedNonDress, ...firedDress];\n\nreturn { json: {\n  event_id: update.event_id,\n  origin_coords: update.new_origin_coords,\n  origin_type: update.new_origin_type,\n  departure_time: departure.departure_time,\n  commute_minutes: departure.commute_minutes,\n  commute_mode: departure.commute_mode,\n  weather_worst: weather.weather_worst || eventRow.weather_worst || '',\n  clothing_advice: weather.clothing_advice || eventRow.clothing_advice || '',\n  remind_dressed: remindDressed.toISOString(),\n  remind_60: new Date(depTime.getTime() - 60 * 60 * 1000).toISOString(),\n  remind_30: new Date(depTime.getTime() - 30 * 60 * 1000).toISOString(),\n  remind_15: new Date(depTime.getTime() - 15 * 60 * 1000).toISOString(),\n  remind_now: departure.departure_time,\n  reminders_sent: keptReminders.join(','),  // preserve already-sent, WF3 won't re-send those\n  state_version: (parseInt(eventRow.state_version) || 0) + 1,\n  departure_changed: true,\n  old_departure: eventRow.departure_time,\n  diff_minutes: Math.round(Math.abs(new Date(departure.departure_time) - new Date(eventRow.departure_time)) / 60000),\n  ntfy_topic: update.ntfy_topic\n}};\n",
+        "jsCode": "\n// Recalculate reminder times with the new departure time\nconst departure = $('Recalculate Departure').item.json;\nconst weather = $json; // from Sub-WF B\nconst eventRow = $('Read Event Row').item.json;\nconst update = $('Loop Events To Update').item.json;\n\nif (departure.error) {\n  // Sub-WF A failed — keep existing departure, just update origin\n  return { json: {\n    event_id: update.event_id,\n    origin_coords: update.new_origin_coords,\n    origin_type: update.new_origin_type,\n    state_version: (parseInt(eventRow.state_version) || 0) + 1,\n    departure_changed: false\n  }};\n}\n\nconst depTime = new Date(departure.departure_time);\nconst fourAM = new Date(depTime);\nfourAM.setHours(4, 0, 0, 0);\n\n// Recalculate remind_dressed using DRESS_REMINDER_INTERVALS, filtered by dress_cap\nconst ALL_DRESS_INTERVALS = $vars.DRESS_REMINDER_INTERVALS.split(',').map(s => s.trim()).filter(Boolean).map(Number).filter(n => !isNaN(n));\nconst dressCap = parseInt(eventRow.dress_cap) || 0;\nconst DRESS_INTERVALS = dressCap > 0\n  ? ALL_DRESS_INTERVALS.filter(n => n <= dressCap)\n  : ALL_DRESS_INTERVALS;\nconst maxInterval = DRESS_INTERVALS.length > 0 ? Math.max(...DRESS_INTERVALS) : 0;\nconst dressedEarliest = maxInterval > 0\n  ? new Date(depTime.getTime() - maxInterval * 60 * 1000)\n  : depTime;\nconst remindDressed = dressedEarliest < fourAM ? fourAM : dressedEarliest;\n\n// Note: at_home is NOT recalculated here. It's maintained by WF4's main flow\n// (Nodes 12a-12c) based on real-time GPS position, not event locations.\n// The at_home column is preserved by omitting it from this upsert.\n\n// Determine which reminders have already been sent.\n// When origin changes (e.g., arrived at event A, now heading to event B),\n// the departure time shifts. We KEEP already-fired standard reminders (remind_60, remind_30, etc.)\n// because they were correct at the time they fired. We CLEAR unfired dress reminders\n// (remind_dressed_*) since the clothing advice may change with the new origin's weather.\nconst alreadySent = (eventRow.reminders_sent || '').split(',').map(s => s.trim()).filter(Boolean);\n\n// Clear unfired dress reminders — they need to re-fire with updated clothing advice\nconst firedNonDress = alreadySent.filter(r => !r.startsWith('remind_dressed'));\nconst firedDress = alreadySent.filter(r => r.startsWith('remind_dressed'));\n// Keep fired dress reminders (they already went to the user), only new dress times will re-fire\nconst keptReminders = [...firedNonDress, ...firedDress];\n\nreturn { json: {\n  event_id: update.event_id,\n  origin_coords: update.new_origin_coords,\n  origin_type: update.new_origin_type,\n  departure_time: departure.departure_time,\n  commute_minutes: departure.commute_minutes,\n  commute_mode: departure.commute_mode,\n  weather_worst: weather.weather_worst || eventRow.weather_worst || '',\n  clothing_advice: weather.clothing_advice || eventRow.clothing_advice || '',\n  remind_dressed: remindDressed.toISOString(),\n  remind_60: new Date(depTime.getTime() - 60 * 60 * 1000).toISOString(),\n  remind_30: new Date(depTime.getTime() - 30 * 60 * 1000).toISOString(),\n  remind_15: new Date(depTime.getTime() - 15 * 60 * 1000).toISOString(),\n  remind_now: departure.departure_time,\n  reminders_sent: keptReminders.join(','),  // preserve already-sent, WF3 won't re-send those\n  state_version: (parseInt(eventRow.state_version) || 0) + 1,\n  departure_changed: true,\n  old_departure: eventRow.departure_time,\n  diff_minutes: Math.round(Math.abs(new Date(departure.departure_time) - new Date(eventRow.departure_time)) / 60000),\n  ntfy_topic: update.ntfy_topic\n}};\n",
         "mode": "runOnceForAllItems"
       },
       "id": "a6dff229-2b3d-45ad-88ff-5fe32b214b2e",
@@ -929,47 +928,47 @@
             },
             {
               "column": "departure_time",
-              "fieldValue": "={{ $json.departure_time }}"
+              "fieldValue": "={{ $json.departure_changed ? $json.departure_time : \"\" }}"
             },
             {
               "column": "commute_minutes",
-              "fieldValue": "={{ $json.commute_minutes }}"
+              "fieldValue": "={{ $json.departure_changed ? $json.commute_minutes : \"\" }}"
             },
             {
               "column": "commute_mode",
-              "fieldValue": "={{ $json.commute_mode }}"
+              "fieldValue": "={{ $json.departure_changed ? $json.commute_mode : \"\" }}"
             },
             {
               "column": "weather_worst",
-              "fieldValue": "={{ $json.weather_worst }}"
+              "fieldValue": "={{ $json.departure_changed ? $json.weather_worst : \"\" }}"
             },
             {
               "column": "clothing_advice",
-              "fieldValue": "={{ $json.clothing_advice }}"
+              "fieldValue": "={{ $json.departure_changed ? $json.clothing_advice : \"\" }}"
             },
             {
               "column": "remind_dressed",
-              "fieldValue": "={{ $json.remind_dressed }}"
+              "fieldValue": "={{ $json.departure_changed ? $json.remind_dressed : \"\" }}"
             },
             {
               "column": "remind_60",
-              "fieldValue": "={{ $json.remind_60 }}"
+              "fieldValue": "={{ $json.departure_changed ? $json.remind_60 : \"\" }}"
             },
             {
               "column": "remind_30",
-              "fieldValue": "={{ $json.remind_30 }}"
+              "fieldValue": "={{ $json.departure_changed ? $json.remind_30 : \"\" }}"
             },
             {
               "column": "remind_15",
-              "fieldValue": "={{ $json.remind_15 }}"
+              "fieldValue": "={{ $json.departure_changed ? $json.remind_15 : \"\" }}"
             },
             {
               "column": "remind_now",
-              "fieldValue": "={{ $json.remind_now }}"
+              "fieldValue": "={{ $json.departure_changed ? $json.remind_now : \"\" }}"
             },
             {
               "column": "reminders_sent",
-              "fieldValue": "={{ $json.reminders_sent }}"
+              "fieldValue": "={{ $json.departure_changed ? $json.reminders_sent : \"\" }}"
             }
           ]
         }
@@ -1127,7 +1126,7 @@
         },
         "sendBody": true,
         "bodyType": "raw",
-        "body": "You're still at home but should have left for {{ $json.title }}!"
+        "body": "={{ $json.user_is_at_home ? \"You're still at home but should have left for \" + $json.title + \"!\" : \"You're away from home and should have left for \" + $json.title + \"! ~\" + ($json.away_walk_back_min || \"?\") + \" min walk back.\" }}"
       },
       "credentials": {
         "httpHeaderAuth": {
@@ -1185,7 +1184,7 @@
       ]
     },
     {
-      "name": "At-Home Update Needed?",
+      "name": "Location Update Needed?",
       "type": "n8n-nodes-base.if",
       "typeVersion": 2,
       "parameters": {
@@ -1196,7 +1195,7 @@
           },
           "conditions": [
             {
-              "leftValue": "={{ $('Select Active Event + Run State Machine').item.json.at_home_updates }}",
+              "leftValue": "={{ $(\"Select Active Event + Run State Machine\").item.json.location_updates }}",
               "rightValue": "",
               "operation": {
                 "type": "string",
@@ -1215,11 +1214,11 @@
       ]
     },
     {
-      "name": "Prepare At-Home Updates",
+      "name": "Prepare Location Updates",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "\n// Parse the list of event IDs that need at_home updated\nconst stateData = $('Select Active Event + Run State Machine').item.json;\nconst eventIds = JSON.parse(stateData.at_home_updates);\nconst newAtHome = stateData.user_is_at_home;\n\nreturn eventIds.map(eventId => ({ json: {\n  event_id: eventId,\n  at_home: newAtHome\n}}));\n",
+        "jsCode": "\n// Parse the list of event IDs that need location state updated\nconst stateData = $('Select Active Event + Run State Machine').item.json;\nconst eventIds = JSON.parse(stateData.location_updates);\nconst newAtHome = stateData.user_is_at_home;\nconst walkBackMin = stateData.away_walk_back_min;\n\nreturn eventIds.map(eventId => ({ json: {\n  event_id: eventId,\n  at_home: newAtHome,\n  away_walk_back_min: walkBackMin\n}}));\n",
         "mode": "runOnceForAllItems"
       },
       "id": "fd6c8136-5895-4f39-9d08-2d67c2e084bf",
@@ -1229,7 +1228,7 @@
       ]
     },
     {
-      "name": "Loop At-Home Updates",
+      "name": "Loop Location Updates",
       "type": "n8n-nodes-base.splitInBatches",
       "typeVersion": 3,
       "parameters": {
@@ -1243,7 +1242,7 @@
       ]
     },
     {
-      "name": "Update At-Home Flag",
+      "name": "Update Location State",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.5,
       "parameters": {
@@ -1276,6 +1275,14 @@
             {
               "column": "at_home",
               "fieldValue": "={{ $json.at_home }}"
+            },
+            {
+              "column": "away_walk_back_min",
+              "fieldValue": "={{ $json.away_walk_back_min }}"
+            },
+            {
+              "column": "at_home_pending",
+              "fieldValue": "={{ $json.at_home_pending }}"
             }
           ]
         }
@@ -1289,6 +1296,79 @@
       "id": "faf92e0c-70f9-4a06-aaa8-cf4a359f06e8",
       "position": [
         690,
+        1620
+      ]
+    },
+    {
+      "name": "Away Notify?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $(\"Select Active Event + Run State Machine\").item.json.away_notify }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "e8e0b995-2684-4dec-b503-01901bc31a2c",
+      "position": [
+        910,
+        1620
+      ]
+    },
+    {
+      "name": "Send Away Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "parameters": {
+        "method": "POST",
+        "url": "=http://localhost:8080/{{ $(\"Select Active Event + Run State Machine\").item.json.ntfy_topic }}",
+        "authentication": "predefinedCredentialType",
+        "options": {},
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParametersUi": {
+          "parameter": [
+            {
+              "name": "X-Title",
+              "value": "Away From Home"
+            },
+            {
+              "name": "X-Priority",
+              "value": "4"
+            },
+            {
+              "name": "X-Tags",
+              "value": "walking"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyType": "raw",
+        "body": "={{ (() => { const sm = $(\"Select Active Event + Run State Machine\").item.json; const wb = sm.away_walk_back_min; const title = sm.title; const dep = sm.effective_departure || ''; const depDate = dep ? new Date(new Date(dep).getTime() - wb * 60000) : null; const returnBy = depDate ? String(depDate.getHours()).padStart(2,'0') + ':' + String(depDate.getMinutes()).padStart(2,'0') : '?'; return wb > 45 ? \"You're ~\" + wb + \" min walk from home. Consider transport. Return by \" + returnBy + \" for \" + title + \".\" : \"You're ~\" + wb + \" min walk from home. Return by \" + returnBy + \" for \" + title + \".\"; })() }}"
+      },
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "",
+          "name": "ntfy-auth"
+        }
+      },
+      "id": "c99d44a1-b6c0-4762-8a44-31d2d90afa04",
+      "position": [
+        1130,
         1620
       ]
     },
@@ -1439,14 +1519,15 @@
         ],
         [
           {
-            "node": "Write Pending Flags",
+            "node": "Location Update Needed?",
             "type": "main",
             "index": 0
           }
         ],
+        [],
         [
           {
-            "node": "At-Home Update Needed?",
+            "node": "Write Pending Flags",
             "type": "main",
             "index": 0
           }
@@ -1697,7 +1778,7 @@
         ],
         [
           {
-            "node": "At-Home Update Needed?",
+            "node": "Location Update Needed?",
             "type": "main",
             "index": 0
           }
@@ -1708,52 +1789,58 @@
       "main": [
         [
           {
-            "node": "At-Home Update Needed?",
+            "node": "Location Update Needed?",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "At-Home Update Needed?": {
+    "Location Update Needed?": {
       "main": [
         [
           {
-            "node": "Prepare At-Home Updates",
+            "node": "Prepare Location Updates",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Prepare At-Home Updates": {
+    "Prepare Location Updates": {
       "main": [
         [
           {
-            "node": "Loop At-Home Updates",
+            "node": "Loop Location Updates",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
-    "Loop At-Home Updates": {
+    "Loop Location Updates": {
       "main": [
         [
           {
-            "node": "Update At-Home Flag",
+            "node": "Update Location State",
             "type": "main",
             "index": 0
           }
         ],
-        []
+        [
+          {
+            "node": "Away Notify?",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
-    "Update At-Home Flag": {
+    "Update Location State": {
       "main": [
         [
           {
-            "node": "Loop At-Home Updates",
+            "node": "Loop Location Updates",
             "type": "main",
             "index": 0
           }
@@ -1764,18 +1851,30 @@
       "main": [
         [
           {
-            "node": "At-Home Update Needed?",
+            "node": "Location Update Needed?",
             "type": "main",
             "index": 0
           }
         ]
       ]
     },
+    "Away Notify?": {
+      "main": [
+        [
+          {
+            "node": "Send Away Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
     "Write Pending Flags": {
       "main": [
         [
           {
-            "node": "At-Home Update Needed?",
+            "node": "Location Update Needed?",
             "type": "main",
             "index": 0
           }
@@ -1784,7 +1883,7 @@
     }
   },
   "settings": {
-    "errorWorkflow": "__ERROR_HANDLER_WORKFLOW_ID__",
+    "errorWorkflow": "",
     "timezone": "Europe/Bucharest"
   }
 }
