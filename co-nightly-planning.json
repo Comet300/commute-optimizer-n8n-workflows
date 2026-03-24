@@ -57,7 +57,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "// Stale-state reconciliation: find events where current_state is NOT terminal\n// and end_time + 60 min has passed\nconst now = new Date();\nconst items = $input.all();\nconst staleEvents = [];\nconst cleanEvents = [];\n\nfor (const item of items) {\n  const row = item.json;\n  const endTime = new Date(row.end_time);\n  const sixtyMinAfterEnd = new Date(endTime.getTime() + 60 * 60 * 1000);\n  const terminalStates = ['arrived', 'cancelled', 'skipped', 'expired'];\n  const isTerminal = terminalStates.includes(row.current_state);\n\n  if (!isTerminal && now > sixtyMinAfterEnd) {\n    // Check cancel_requested_at \u2014 if user cancelled recently, honor that\n    let newState = 'expired';\n    if (row.cancel_requested_at) {\n      const cancelTime = new Date(row.cancel_requested_at);\n      const sixtyMinAgo = new Date(now.getTime() - 60 * 60 * 1000);\n      if (cancelTime > sixtyMinAgo) {\n        newState = 'cancelled';\n      }\n    }\n    staleEvents.push({\n      ...row,\n      new_state: newState,\n      new_state_version: (parseInt(row.state_version) || 0) + 1\n    });\n  }\n}\n\nreturn staleEvents.map(e => ({ json: e }));",
+        "jsCode": "// Stale-state reconciliation: find events where current_state is NOT terminal\n// and end_time + 60 min has passed\nconst now = new Date();\nconst items = $input.all();\nconst staleEvents = [];\nconst cleanEvents = [];\n\nfor (const item of items) {\n  const row = item.json;\n  const endTime = new Date(row.end_time);\n  const sixtyMinAfterEnd = new Date(endTime.getTime() + 60 * 60 * 1000);\n  const terminalStates = ['arrived', 'cancelled', 'skipped', 'expired'];\n  const isTerminal = terminalStates.includes(row.current_state);\n\n  if (!isTerminal && now > sixtyMinAfterEnd) {\n    // Check cancel_requested_at — if user cancelled recently, honor that\n    let newState = 'expired';\n    if (row.cancel_requested_at) {\n      const cancelTime = new Date(row.cancel_requested_at);\n      const sixtyMinAgo = new Date(now.getTime() - 60 * 60 * 1000);\n      if (cancelTime > sixtyMinAgo) {\n        newState = 'cancelled';\n      }\n    }\n    staleEvents.push({\n      ...row,\n      new_state: newState,\n      new_state_version: (parseInt(row.state_version) || 0) + 1\n    });\n  }\n}\n\nreturn staleEvents.map(e => ({ json: e }));",
         "mode": "runOnceForAllItems"
       },
       "id": "02abc610-ff21-492d-8bcd-59ab3cb49f1e",
@@ -264,7 +264,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "// Dynamic origin detection \u2014 prepare default origin from n8n Variables.\n// The subsequent Sheets read (Node 7a) + Code node (Node 7b) may override\n// with the user's actual location if they're travelling.\nconst user = $json;\nconst homeCoords = $vars.HOME_COORDS; // e.g. \"44.4268,26.1025\"\nconst [homeLat, homeLng] = homeCoords.split(',').map(Number);\n\nreturn {\n  json: {\n    ...user,\n    home_lat: homeLat,\n    home_lng: homeLng,\n    origin_coords: homeCoords,\n    origin_type: 'home'\n  }\n};",
+        "jsCode": "// Dynamic origin detection — prepare default origin from n8n Variables.\n// The subsequent Sheets read (Node 7a) + Code node (Node 7b) may override\n// with the user's actual location if they're travelling.\nconst user = $json;\nconst homeCoords = $vars.HOME_COORDS; // e.g. \"44.4268,26.1025\"\nconst [homeLat, homeLng] = homeCoords.split(',').map(Number);\n\nreturn {\n  json: {\n    ...user,\n    home_lat: homeLat,\n    home_lng: homeLng,\n    origin_coords: homeCoords,\n    origin_type: 'home'\n  }\n};",
         "mode": "runOnceForAllItems"
       },
       "id": "4c800d59-9c19-4578-9652-b7e7d2b1a782",
@@ -643,7 +643,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "// Geocode failed \u2014 build a row without commute data.\n// The event still appears in daily_plan but with no departure time or travel info.\n// WF3 will send reminders based on start_time only (remind_60, remind_15).\nconst event = $('Classify Event').item.json;\nconst user = $('Loop Users').item.json;\nconst origin = $('Check If Travelling').item.json;\nconst start = new Date(event.adjusted_start);\n\nreturn { json: {\n  event_id: event.event_id,\n  user_id: user.user_id,\n  title: event.title,\n  start_time: event.adjusted_start,\n  end_time: event.adjusted_end,\n  location: event.location,\n  location_coords: '',\n  is_online: false,\n  is_tentative: event.is_tentative,\n  commute_mode: '',\n  departure_time: '',\n  commute_minutes: 0,\n  weather_worst: '',\n  clothing_advice: '',\n  remind_dressed: '',\n  remind_60: new Date(start.getTime() - 60 * 60 * 1000).toISOString(),\n  remind_30: '',\n  remind_15: new Date(start.getTime() - 15 * 60 * 1000).toISOString(),\n  remind_now: '',\n  plan_date: $now.toFormat('yyyy-MM-dd'),\n  origin_coords: origin.origin_coords,\n  origin_type: origin.origin_type,\n  ntfy_topic: user.ntfy_topic,\n  at_home: origin.origin_type === 'home',\n  current_state: 'planned',\n  state_version: 0,\n  _geocode_failed: true\n}};",
+        "jsCode": "// Geocode failed — build a row without commute data.\n// The event still appears in daily_plan but with no departure time or travel info.\n// WF3 will send reminders based on start_time only (remind_60, remind_15).\nconst event = $('Classify Event').item.json;\nconst user = $('Loop Users').item.json;\nconst origin = $('Check If Travelling').item.json;\nconst start = new Date(event.adjusted_start);\n\nreturn { json: {\n  event_id: event.event_id,\n  user_id: user.user_id,\n  title: event.title,\n  start_time: event.adjusted_start,\n  end_time: event.adjusted_end,\n  location: event.location,\n  location_coords: '',\n  is_online: false,\n  is_tentative: event.is_tentative,\n  commute_mode: '',\n  departure_time: '',\n  commute_minutes: 0,\n  weather_worst: '',\n  clothing_advice: '',\n  remind_dressed: '',\n  remind_60: new Date(start.getTime() - 60 * 60 * 1000).toISOString(),\n  remind_30: '',\n  remind_15: new Date(start.getTime() - 15 * 60 * 1000).toISOString(),\n  remind_now: '',\n  plan_date: $now.toFormat('yyyy-MM-dd'),\n  origin_coords: origin.origin_coords,\n  origin_type: origin.origin_type,\n  ntfy_topic: user.ntfy_topic,\n  at_home: origin.origin_type === 'home',\n  current_state: 'planned',\n  state_version: 0,\n  _geocode_failed: true\n}};",
         "mode": "runOnceForAllItems"
       },
       "id": "c2bb1ae3-0ecc-44e3-9849-4fa953b060cc",
@@ -727,7 +727,7 @@
       },
       "id": "1a3d9bd9-4b08-4440-a93b-0b713c6bca83",
       "position": [
-        1130,
+        1350,
         1180
       ]
     },
@@ -736,7 +736,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "// --- Required n8n Variables check ---\nconst requiredVars = ['HOME_COORDS', 'HOME_RADIUS_METERS', 'DRESS_REMINDER_INTERVALS'];\nconst missingVars = requiredVars.filter(k => !$vars[k]);\nif (missingVars.length) {\n  throw new Error(`Missing n8n Variables: ${missingVars.join(', ')}. Set them in Settings \u2192 Variables before activating workflows.`);\n}\n\n// Combine all data into a daily_plan row\nconst classified = $('Classify Event').item.json;\nconst departure = $('Calculate Departure').item.json;\nconst weather = $json; // output of Sub-WF B\nconst user = $('Loop Users').item.json;\nconst origin = $('Check If Travelling').item.json;\n\n// --- At-home initial state ---\n// Set at_home based on origin_type. WF4 will update this in real-time based on GPS\n// position throughout the day \u2014 no need to predict from event locations here.\nconst atHome = origin.origin_type === 'home';\n\n// --- Reminder times ---\nconst ALL_DRESS_INTERVALS = $vars.DRESS_REMINDER_INTERVALS.split(',').map(s => s.trim()).filter(Boolean).map(Number).filter(n => !isNaN(n)); // e.g. \"90,60,30,15\" \u2192 [90, 60, 30, 15]\n\n// Apply dress_cap: if event has [dress:N] or [N] tag, only use intervals \u2264 N\nconst dressCap = classified.dress_cap || 0;\nconst DRESS_INTERVALS = dressCap > 0\n  ? ALL_DRESS_INTERVALS.filter(n => n <= dressCap)\n  : ALL_DRESS_INTERVALS;\nconst maxInterval = DRESS_INTERVALS.length > 0 ? Math.max(...DRESS_INTERVALS) : 0;\n\nconst depTime = new Date(departure.departure_time);\nconst fourAM = new Date(depTime);\nfourAM.setHours(4, 0, 0, 0);\n\n// remind_dressed = max(departure - max(filtered intervals), 04:00)\n// Stores the earliest dressed reminder time. WF3 expands the filtered intervals\n// into individual checks (e.g., remind_dressed_30, remind_dressed_15 for a [30] event).\n// These only fire if at_home == true (maintained by WF4 based on real GPS position).\nconst dressedEarliest = maxInterval > 0\n  ? new Date(depTime.getTime() - maxInterval * 60 * 1000)\n  : depTime; // no intervals \u2192 no early reminder\nconst remindDressed = dressedEarliest < fourAM ? fourAM : dressedEarliest;\n\n// State column guard: if this event already exists with a non-\"planned\" state,\n// preserve its current_state and state_version. This prevents WF1 re-runs\n// (e.g., WF7 catch-up) from overwriting WF4's mid-day state transitions.\nconst existingRows = $(\"Read Today's Existing Plan\").all().map(i => i.json);\nconst existingRow = existingRows.find(r => r.event_id === classified.event_id);\nconst preserveState = existingRow && existingRow.current_state\n  && existingRow.current_state !== 'planned';\n\nconst row = {\n  event_id: classified.event_id,\n  user_id: user.user_id,\n  title: classified.title,\n  start_time: classified.adjusted_start,\n  end_time: classified.adjusted_end,\n  location: classified.location,\n  location_coords: $('Extract Coordinates').item.json.location_coords,\n  is_online: false,\n  is_tentative: classified.is_tentative,\n  commute_mode: departure.commute_mode,\n  departure_time: departure.departure_time,\n  commute_minutes: departure.commute_minutes,\n  weather_worst: weather.weather_worst || '',\n  clothing_advice: weather.clothing_advice || '',\n  dress_cap: dressCap,\n  remind_dressed: remindDressed.toISOString(),\n  remind_60: new Date(depTime.getTime() - 60 * 60 * 1000).toISOString(),\n  remind_30: new Date(depTime.getTime() - 30 * 60 * 1000).toISOString(),\n  remind_15: new Date(depTime.getTime() - 15 * 60 * 1000).toISOString(),\n  remind_now: departure.departure_time,\n  plan_date: $now.toFormat('yyyy-MM-dd'),\n  origin_coords: origin.origin_coords,\n  origin_type: origin.origin_type,\n  ntfy_topic: user.ntfy_topic,\n  at_home: atHome\n};\n\nif (preserveState) {\n  // Row exists with active state transition \u2014 don't reset.\n  // Omit current_state and state_version so the upsert preserves existing values.\n  // (Unmapped columns are preserved by the native \"Append or Update Row\" operation.)\n} else {\n  row.current_state = 'planned';\n  row.state_version = 0;\n}\n\nreturn { json: row };",
+        "jsCode": "// --- Required n8n Variables check ---\nconst requiredVars = ['HOME_COORDS', 'HOME_RADIUS_METERS', 'DRESS_REMINDER_INTERVALS'];\nconst missingVars = requiredVars.filter(k => !$vars[k]);\nif (missingVars.length) {\n  throw new Error(`Missing n8n Variables: ${missingVars.join(', ')}. Set them in Settings → Variables before activating workflows.`);\n}\n\n// Combine all data into a daily_plan row\nconst classified = $('Classify Event').item.json;\nconst departure = $('Calculate Departure').item.json;\nconst weather = $json; // output of Sub-WF B\nconst user = $('Loop Users').item.json;\nconst origin = $('Check If Travelling').item.json;\n\n// --- At-home initial state ---\n// Set at_home based on origin_type. WF4 will update this in real-time based on GPS\n// position throughout the day — no need to predict from event locations here.\nconst atHome = origin.origin_type === 'home';\n\n// --- Reminder times ---\nconst ALL_DRESS_INTERVALS = $vars.DRESS_REMINDER_INTERVALS.split(',').map(s => s.trim()).filter(Boolean).map(Number).filter(n => !isNaN(n)); // e.g. \"90,60,30,15\" → [90, 60, 30, 15]\n\n// Apply dress_cap: if event has [dress:N] or [N] tag, only use intervals ≤ N\nconst dressCap = classified.dress_cap || 0;\nconst DRESS_INTERVALS = dressCap > 0\n  ? ALL_DRESS_INTERVALS.filter(n => n <= dressCap)\n  : ALL_DRESS_INTERVALS;\nconst maxInterval = DRESS_INTERVALS.length > 0 ? Math.max(...DRESS_INTERVALS) : 0;\n\nconst depTime = new Date(departure.departure_time);\nconst fourAM = new Date(depTime);\nfourAM.setHours(4, 0, 0, 0);\n\n// remind_dressed = max(departure - max(filtered intervals), 04:00)\n// Stores the earliest dressed reminder time. WF3 expands the filtered intervals\n// into individual checks (e.g., remind_dressed_30, remind_dressed_15 for a [30] event).\n// These only fire if at_home == true (maintained by WF4 based on real GPS position).\nconst dressedEarliest = maxInterval > 0\n  ? new Date(depTime.getTime() - maxInterval * 60 * 1000)\n  : depTime; // no intervals → no early reminder\nconst remindDressed = dressedEarliest < fourAM ? fourAM : dressedEarliest;\n\n// State column guard: if this event already exists with a non-\"planned\" state,\n// preserve its current_state and state_version. This prevents WF1 re-runs\n// (e.g., WF7 catch-up) from overwriting WF4's mid-day state transitions.\nconst existingRows = $(\"Read Today's Existing Plan\").all().map(i => i.json);\nconst existingRow = existingRows.find(r => r.event_id === classified.event_id);\nconst preserveState = existingRow && existingRow.current_state\n  && existingRow.current_state !== 'planned';\n\nconst row = {\n  event_id: classified.event_id,\n  user_id: user.user_id,\n  title: classified.title,\n  start_time: classified.adjusted_start,\n  end_time: classified.adjusted_end,\n  location: classified.location,\n  location_coords: $('Extract Coordinates').item.json.location_coords,\n  is_online: false,\n  is_tentative: classified.is_tentative,\n  commute_mode: departure.commute_mode,\n  departure_time: departure.departure_time,\n  commute_minutes: departure.commute_minutes,\n  weather_worst: weather.weather_worst || '',\n  clothing_advice: weather.clothing_advice || '',\n  dress_cap: dressCap,\n  remind_dressed: remindDressed.toISOString(),\n  remind_60: new Date(depTime.getTime() - 60 * 60 * 1000).toISOString(),\n  remind_30: new Date(depTime.getTime() - 30 * 60 * 1000).toISOString(),\n  remind_15: new Date(depTime.getTime() - 15 * 60 * 1000).toISOString(),\n  remind_now: departure.departure_time,\n  plan_date: $now.toFormat('yyyy-MM-dd'),\n  origin_coords: origin.origin_coords,\n  origin_type: origin.origin_type,\n  ntfy_topic: user.ntfy_topic,\n  at_home: atHome\n};\n\nif (preserveState) {\n  // Row exists with active state transition — don't reset.\n  // Omit current_state and state_version so the upsert preserves existing values.\n  // (Unmapped columns are preserved by the native \"Append or Update Row\" operation.)\n} else {\n  row.current_state = 'planned';\n  row.state_version = 0;\n}\n\nreturn { json: row };",
         "mode": "runOnceForAllItems"
       },
       "id": "ffe99fbd-9429-40a7-9e78-ac03260619d3",
@@ -828,7 +828,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "const allRows = $input.all().map(i => i.json);\nconst user = $('Loop Users').item.json;\nconst origin = $('Check If Travelling').item.json;\nconst today = $now.toFormat('yyyy-MM-dd');\nconst events = allRows.filter(r => r.user_id === user.user_id && r.plan_date === today);\n\nlet digest = `Good morning ${user.full_name}!\n`;\ndigest += `Planning from: ${origin.origin_type === 'travel' ? 'current location (travel mode)' : 'home'}\n\n`;\n\nif (events.length === 0) {\n  digest += \"No events today \u2014 enjoy your free day!\";\n} else {\n  for (const evt of events) {\n    const prefix = evt.is_tentative ? '\u26a0 Tentative: ' : '';\n    if (evt.is_online) {\n      digest += `${prefix}\ud83d\udcbb ${evt.title} at ${evt.start_time}\n`;\n    } else {\n      digest += `${prefix}\ud83d\ude97 ${evt.title} at ${evt.start_time}\n`;\n      digest += `   Depart by ${evt.departure_time} (${evt.commute_minutes} min, ${evt.commute_mode})\n`;\n      if (evt.clothing_advice) digest += `   \ud83d\udc54 ${evt.clothing_advice}\n`;\n    }\n  }\n}\n\nreturn { json: { message: digest, ntfy_topic: user.ntfy_topic } };",
+        "jsCode": "const allRows = $input.all().map(i => i.json);\nconst user = $('Loop Users').item.json;\nconst origin = $('Check If Travelling').item.json;\nconst today = $now.toFormat('yyyy-MM-dd');\nconst events = allRows.filter(r => r.user_id === user.user_id && r.plan_date === today);\n\nlet digest = `Good morning ${user.full_name}!\n`;\ndigest += `Planning from: ${origin.origin_type === 'travel' ? 'current location (travel mode)' : 'home'}\n\n`;\n\nif (events.length === 0) {\n  digest += \"No events today — enjoy your free day!\";\n} else {\n  for (const evt of events) {\n    const prefix = evt.is_tentative ? '⚠ Tentative: ' : '';\n    if (evt.is_online) {\n      digest += `${prefix}💻 ${evt.title} at ${evt.start_time}\n`;\n    } else {\n      digest += `${prefix}🚗 ${evt.title} at ${evt.start_time}\n`;\n      digest += `   Depart by ${evt.departure_time} (${evt.commute_minutes} min, ${evt.commute_mode})\n`;\n      if (evt.clothing_advice) digest += `   👔 ${evt.clothing_advice}\n`;\n    }\n  }\n}\n\nreturn { json: { message: digest, ntfy_topic: user.ntfy_topic } };",
         "mode": "runOnceForAllItems"
       },
       "id": "adc18213-d2b3-4a2d-b0a1-b2c081b2b19f",
@@ -1015,6 +1015,48 @@
       "position": [
         1130,
         1620
+      ]
+    },
+    {
+      "name": "Departure OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.error }}",
+              "rightValue": true,
+              "operation": {
+                "type": "boolean",
+                "operation": "notTrue"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "dep-ok-mn4ch6b6",
+      "position": [
+        1130,
+        1180
+      ]
+    },
+    {
+      "name": "Handle Departure Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "parameters": {
+        "jsCode": "// Departure calculation failed — build a row without commute data.\n// Same pattern as Handle Geocode Failure.\nconst event = $('Classify Event').item.json;\nconst user = $('Loop Users').item.json;\nconst origin = $('Check If Travelling').item.json;\nconst geocodeResult = $('Extract Coordinates').item.json;\nconst start = new Date(event.adjusted_start);\n\nreturn { json: {\n  event_id: event.event_id,\n  user_id: user.user_id,\n  title: event.title,\n  start_time: event.adjusted_start,\n  end_time: event.adjusted_end,\n  location: event.location,\n  location_coords: geocodeResult.location_coords || '',\n  is_online: false,\n  is_tentative: event.is_tentative,\n  commute_mode: '',\n  departure_time: '',\n  commute_minutes: 0,\n  weather_worst: '',\n  clothing_advice: '',\n  remind_dressed: '',\n  remind_60: new Date(start.getTime() - 60 * 60 * 1000).toISOString(),\n  remind_30: '',\n  remind_15: new Date(start.getTime() - 15 * 60 * 1000).toISOString(),\n  remind_now: '',\n  plan_date: $now.toFormat('yyyy-MM-dd'),\n  origin_coords: origin.origin_coords,\n  origin_type: origin.origin_type,\n  ntfy_topic: user.ntfy_topic,\n  at_home: origin.origin_type === 'home',\n  current_state: 'planned',\n  state_version: 0,\n  _departure_calc_failed: true\n}};"
+      },
+      "id": "dep-fail-mn4ch6b7",
+      "position": [
+        1130,
+        1380
       ]
     }
   ],
@@ -1328,7 +1370,7 @@
       "main": [
         [
           {
-            "node": "Get Weather",
+            "node": "Departure OK?",
             "type": "main",
             "index": 0
           }
@@ -1456,10 +1498,39 @@
           }
         ]
       ]
+    },
+    "Departure OK?": {
+      "main": [
+        [
+          {
+            "node": "Get Weather",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Handle Departure Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Departure Failure": {
+      "main": [
+        [
+          {
+            "node": "Upsert Daily Plan Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
-    "errorWorkflow": "",
+    "errorWorkflow": "__ERROR_HANDLER_WORKFLOW_ID__",
     "timezone": "Europe/Bucharest"
   }
 }

@@ -199,7 +199,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "\nconst calendarEvents = $('Extract Calendar Events').all().map(i => i.json);\nconst planRows = $input.all().map(i => i.json);\nconst user = $('Loop Users').item.json;\nconst today = $now.toFormat('yyyy-MM-dd');\n\n// Build lookups\nconst planByEventId = {};\nfor (const row of planRows) {\n  if (row.user_id === user.user_id && row.plan_date === today) {\n    planByEventId[row.event_id] = row;\n  }\n}\n\nconst calByEventId = {};\nfor (const evt of calendarEvents) {\n  calByEventId[evt.id] = evt;\n}\n\nconst newEvents = [];\nconst changedEvents = [];\nconst deletedEvents = [];\n\n// NEW: in calendar but not in plan\nfor (const evt of calendarEvents) {\n  if (!planByEventId[evt.id]) {\n    newEvents.push(evt);\n  }\n}\n\n// CHANGED: in both, but time or location differ\nfor (const [eventId, evt] of Object.entries(calByEventId)) {\n  const plan = planByEventId[eventId];\n  if (!plan) continue;\n  const terminalStates = ['arrived', 'cancelled', 'skipped', 'expired'];\n  if (terminalStates.includes(plan.current_state)) continue;\n\n  const calStart = evt.start?.dateTime || evt.start?.date;\n  const calLocation = (evt.location || '').trim();\n  const planStart = plan.start_time;\n  const planLocation = (plan.location || '').trim();\n\n  if (calStart !== planStart || calLocation !== planLocation) {\n    changedEvents.push({\n      calendar_event: evt,\n      plan_row: plan,\n      location_changed: calLocation !== planLocation,\n      time_changed: calStart !== planStart\n    });\n  }\n}\n\n// DELETED: in plan but not in calendar\nfor (const [eventId, plan] of Object.entries(planByEventId)) {\n  if (!calByEventId[eventId]) {\n    const terminalStates = ['arrived', 'cancelled', 'skipped', 'expired'];\n    if (!terminalStates.includes(plan.current_state)) {\n      deletedEvents.push(plan);\n    }\n  }\n}\n\nreturn { json: {\n  new_events: newEvents,\n  changed_events: changedEvents,\n  deleted_events: deletedEvents,\n  user_id: user.user_id,\n  ntfy_topic: user.ntfy_topic,\n  has_changes: newEvents.length + changedEvents.length + deletedEvents.length > 0\n}};\n",
+        "jsCode": "\nconst calendarEvents = $('Extract Calendar Events').all().map(i => i.json);\nconst planRows = $input.all().map(i => i.json);\nconst user = $('Loop Users').item.json;\nconst today = $now.toFormat('yyyy-MM-dd');\n\n// Build lookups\nconst planByEventId = {};\nfor (const row of planRows) {\n  if (row.user_id === user.user_id && row.plan_date === today) {\n    planByEventId[row.event_id] = row;\n  }\n}\n\nconst calByEventId = {};\nfor (const evt of calendarEvents) {\n  calByEventId[evt.id] = evt;\n}\n\nconst newEvents = [];\nconst changedEvents = [];\nconst deletedEvents = [];\n\n// NEW: in calendar but not in plan\nfor (const evt of calendarEvents) {\n  if (!planByEventId[evt.id]) {\n    newEvents.push(evt);\n  }\n}\n\n// CHANGED: in both, but time or location differ\nfor (const [eventId, evt] of Object.entries(calByEventId)) {\n  const plan = planByEventId[eventId];\n  if (!plan) continue;\n  const terminalStates = ['arrived', 'cancelled', 'skipped', 'expired', 'departed', 'should_leave'];\n  if (terminalStates.includes(plan.current_state)) continue;\n\n  const calStart = evt.start?.dateTime || evt.start?.date;\n  const calLocation = (evt.location || '').trim();\n  const planStart = plan.start_time;\n  const planLocation = (plan.location || '').trim();\n\n  if (calStart !== planStart || calLocation !== planLocation) {\n    changedEvents.push({\n      calendar_event: evt,\n      plan_row: plan,\n      location_changed: calLocation !== planLocation,\n      time_changed: calStart !== planStart\n    });\n  }\n}\n\n// DELETED: in plan but not in calendar\nfor (const [eventId, plan] of Object.entries(planByEventId)) {\n  if (!calByEventId[eventId]) {\n    const terminalStates = ['arrived', 'cancelled', 'skipped', 'expired', 'departed', 'should_leave'];\n    if (!terminalStates.includes(plan.current_state)) {\n      deletedEvents.push(plan);\n    }\n  }\n}\n\nreturn { json: {\n  new_events: newEvents,\n  changed_events: changedEvents,\n  deleted_events: deletedEvents,\n  user_id: user.user_id,\n  ntfy_topic: user.ntfy_topic,\n  has_changes: newEvents.length + changedEvents.length + deletedEvents.length > 0\n}};\n",
         "mode": "runOnceForAllItems"
       },
       "id": "5a756f8b-c073-405d-8949-f32453e6285a",
@@ -393,7 +393,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "\n// Decide origin for this mid-day event:\n// 1. Read latest location_update for user\n// 2. If recent (<2h) and >5km from home → origin = current location, origin_type = \"travel\"\n// 3. Else → origin = HOME_COORDS, origin_type = \"home\"\n// Also compute at_home from latest GPS/WiFi data\n\nconst geocode = $json; // from geocode response\nconst user = $('Loop Users').item.json;\nconst newEvent = $('Loop New Events').item.json;\nconst HOME_COORDS = $vars.HOME_COORDS;\nconst HOME_RADIUS_METERS = parseInt($vars.HOME_RADIUS_METERS) || 200;\nconst [homeLat, homeLng] = HOME_COORDS.split(',').map(Number);\n\n// Extract geocoded coords\nconst geo = geocode.results?.[0]?.geometry?.location;\nconst locationCoords = geo ? `${geo.lat},${geo.lng}` : '';\n\n// Origin determination: WF1 uses a preceding Sheets read + Code node (Node 7/7b) to detect\n// if the user is travelling. WF8 can't do this in a single Code node because n8n Code nodes\n// can't call Google Sheets mid-execution. Adding a separate Sheets read node before this one\n// would work but adds 2 extra nodes per user — marginal benefit since WF4 corrects the origin\n// in real-time as soon as the first GPS update arrives (typically within minutes).\n// Design decision: use HOME_COORDS default; WF4 overrides with actual GPS position.\nconst originCoords = HOME_COORDS;\nconst originType = 'home';\nconst atHome = true; // Conservative default — WF4 corrects in real-time via GPS\n\nconst calStart = newEvent.start?.dateTime || newEvent.start?.date;\nconst calEnd = newEvent.end?.dateTime || newEvent.end?.date;\n\nreturn { json: {\n  event_id: newEvent.id,\n  user_id: user.user_id,\n  plan_date: $now.toFormat('yyyy-MM-dd'),\n  title: newEvent.summary || '(no title)',\n  location: newEvent.location || '',\n  location_coords: locationCoords,\n  start_time: calStart,\n  end_time: calEnd,\n  origin_coords: originCoords,\n  origin_type: originType,\n  at_home: atHome,\n  is_online: false,\n  is_tentative: $('Classify New Event').item.json.is_tentative,\n  ntfy_topic: user.ntfy_topic,\n  _geocode_failed: !geo\n}};\n",
+        "jsCode": "// Decide origin for this mid-day event:\n// 1. Check existing daily_plan for arrived/departed events (user is away from home)\n// 2. If user arrived at a previous event → origin = that event's location, at_home = false\n// 3. If user departed but not arrived → origin = home, at_home = false\n// 4. Else → origin = HOME_COORDS, at_home = true (WF4 corrects in real-time via GPS)\n\nconst geocode = $json; // from geocode response\nconst user = $('Loop Users').item.json;\nconst newEvent = $('Loop New Events').item.json;\nconst HOME_COORDS = $vars.HOME_COORDS;\nconst HOME_RADIUS_METERS = parseInt($vars.HOME_RADIUS_METERS) || 200;\n\n// Extract geocoded coords\nconst geo = geocode.results?.[0]?.geometry?.location;\nconst locationCoords = geo ? `${geo.lat},${geo.lng}` : '';\n\n// Check existing daily_plan for this user's events today\nconst existingPlan = $('Read Existing Daily Plan').all().map(i => i.json);\nconst userEvents = existingPlan.filter(r => r.user_id === user.user_id);\n\n// Look for arrived events (most recent first by start_time)\nconst arrivedEvents = userEvents\n  .filter(r => r.current_state === 'arrived' && r.location_coords)\n  .sort((a, b) => new Date(b.start_time) - new Date(a.start_time));\n\nlet originCoords, originType, atHome;\n\nif (arrivedEvents.length > 0) {\n  // User arrived at a previous event — use that location as origin\n  originCoords = arrivedEvents[0].location_coords;\n  originType = 'event';\n  atHome = false;\n} else {\n  // Check if user has departed (traveling but not yet arrived)\n  const departedEvents = userEvents.filter(r => r.current_state === 'departed');\n  if (departedEvents.length > 0) {\n    originCoords = HOME_COORDS;\n    originType = 'home';\n    atHome = false;\n  } else {\n    // Default: user is at home\n    originCoords = HOME_COORDS;\n    originType = 'home';\n    atHome = true;\n  }\n}\n\nconst calStart = newEvent.start?.dateTime || newEvent.start?.date;\nconst calEnd = newEvent.end?.dateTime || newEvent.end?.date;\n\nreturn { json: {\n  event_id: newEvent.id,\n  user_id: user.user_id,\n  plan_date: $now.toFormat('yyyy-MM-dd'),\n  title: newEvent.summary || '(no title)',\n  location: newEvent.location || '',\n  location_coords: locationCoords,\n  start_time: calStart,\n  end_time: calEnd,\n  origin_coords: originCoords,\n  origin_type: originType,\n  at_home: atHome,\n  is_online: false,\n  is_tentative: $('Classify New Event').item.json.is_tentative,\n  ntfy_topic: user.ntfy_topic,\n  _geocode_failed: !geo\n}};",
         "mode": "runOnceForAllItems"
       },
       "id": "adac2496-3d67-4505-a9fe-f5fc57d3709e",
@@ -707,7 +707,7 @@
       },
       "id": "01664ed9-ddb4-4973-af63-c24b922b6373",
       "position": [
-        470,
+        690,
         1400
       ]
     },
@@ -742,7 +742,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "\n// Recalculate departure and reminders based on what changed\nconst row = $('Loop Changed Events').item.json;\nconst locationChanged = row.location_changed;\nconst newStart = row.new_start_time;\nconst newEnd = row.new_end_time;\n\nlet depTime, commuteMin, commuteMode, locationCoords, weatherWorst, clothingAdvice;\n\nif (locationChanged) {\n  // Full recalculation happened via Sub-WF A + B\n  const departure = $('Recalculate Departure').item.json;\n  const weather = $('Recalculate Weather').item.json;\n  const geocode = $('Re-Geocode Changed Location').item.json;\n  const geo = geocode.results?.[0]?.geometry?.location;\n  locationCoords = geo ? `${geo.lat},${geo.lng}` : row.location_coords;\n  depTime = new Date(departure.departure_time);\n  commuteMin = departure.commute_minutes;\n  commuteMode = departure.commute_mode;\n  weatherWorst = weather.weather_worst || '';\n  clothingAdvice = weather.clothing_advice || '';\n} else {\n  // Time-only change: recalculate departure from existing commute_minutes\n  locationCoords = row.location_coords;\n  commuteMin = parseInt(row.commute_minutes) || 0;\n  commuteMode = row.commute_mode || '';\n  depTime = new Date(new Date(newStart).getTime() - commuteMin * 60000 - 15 * 60000); // buffer\n  weatherWorst = row.weather_worst || '';\n  clothingAdvice = row.clothing_advice || '';\n}\n\nconst fourAM = new Date(depTime); fourAM.setHours(4, 0, 0, 0);\n\n// Preserve dress_cap from existing row (set by Sub-WF D during initial classification)\nconst dressCap = parseInt(row.dress_cap) || 0;\nconst ALL_DRESS_INTERVALS = ($vars.DRESS_REMINDER_INTERVALS || '90,60,30,15').split(',').map(Number);\nconst DRESS_INTERVALS = dressCap > 0\n  ? ALL_DRESS_INTERVALS.filter(n => n <= dressCap)\n  : ALL_DRESS_INTERVALS;\nconst maxDressMin = DRESS_INTERVALS.length > 0 ? Math.max(...DRESS_INTERVALS) : 0;\nconst dressedEarliest = maxDressMin > 0\n  ? new Date(depTime.getTime() - maxDressMin * 60 * 1000)\n  : depTime;\nconst remindDressed = dressedEarliest < fourAM ? fourAM.toISOString() : dressedEarliest.toISOString();\n\nconst oldDep = new Date(row.departure_time);\nconst diffMin = Math.round((oldDep.getTime() - depTime.getTime()) / 60000); // positive = moved earlier\n\nreturn { json: {\n  event_id: row.event_id,\n  start_time: newStart,\n  end_time: newEnd,\n  location: locationChanged ? row.new_location : row.location,\n  location_coords: locationCoords,\n  departure_time: depTime.toISOString(),\n  commute_minutes: commuteMin,\n  commute_mode: commuteMode,\n  weather_worst: weatherWorst,\n  clothing_advice: clothingAdvice,\n  remind_dressed: remindDressed,\n  remind_60: new Date(depTime.getTime() - 60 * 60 * 1000).toISOString(),\n  remind_30: new Date(depTime.getTime() - 30 * 60 * 1000).toISOString(),\n  remind_15: new Date(depTime.getTime() - 15 * 60 * 1000).toISOString(),\n  remind_now: depTime.toISOString(),\n  state_version: (parseInt(row.state_version) || 0) + 1,\n  sync_updated: $now.toISO(),\n  ntfy_topic: row.ntfy_topic,\n  title: row.title,\n  _diff_minutes: diffMin,\n  _moved_earlier_15: diffMin > 15\n}};\n",
+        "jsCode": "\n// Recalculate departure and reminders based on what changed\nconst row = $('Loop Changed Events').item.json;\nconst locationChanged = row.location_changed;\nconst newStart = row.new_start_time;\nconst newEnd = row.new_end_time;\n\nlet depTime, commuteMin, commuteMode, locationCoords, weatherWorst, clothingAdvice;\n\nif (locationChanged) {\n  // Full recalculation happened via Sub-WF A + B\n  const departure = $('Recalculate Departure').item.json;\n  const weather = $('Recalculate Weather').item.json;\n  const geocode = $('Re-Geocode Changed Location').item.json;\n  const geo = geocode.results?.[0]?.geometry?.location;\n  locationCoords = geo ? `${geo.lat},${geo.lng}` : row.location_coords;\n  depTime = new Date(departure.departure_time);\n  commuteMin = departure.commute_minutes;\n  commuteMode = departure.commute_mode;\n  weatherWorst = weather.weather_worst || '';\n  clothingAdvice = weather.clothing_advice || '';\n} else {\n  // Time-only change: recalculate departure from existing commute_minutes\n  locationCoords = row.location_coords;\n  commuteMin = parseInt(row.commute_minutes) || 0;\n  commuteMode = row.commute_mode || '';\n  depTime = new Date(new Date(newStart).getTime() - commuteMin * 60000); // commute_minutes already includes mode-specific buffer from Sub-WF A\n  weatherWorst = row.weather_worst || '';\n  clothingAdvice = row.clothing_advice || '';\n}\n\nconst fourAM = new Date(depTime); fourAM.setHours(4, 0, 0, 0);\n\n// Preserve dress_cap from existing row (set by Sub-WF D during initial classification)\nconst dressCap = parseInt(row.dress_cap) || 0;\nconst ALL_DRESS_INTERVALS = ($vars.DRESS_REMINDER_INTERVALS || '90,60,30,15').split(',').map(Number);\nconst DRESS_INTERVALS = dressCap > 0\n  ? ALL_DRESS_INTERVALS.filter(n => n <= dressCap)\n  : ALL_DRESS_INTERVALS;\nconst maxDressMin = DRESS_INTERVALS.length > 0 ? Math.max(...DRESS_INTERVALS) : 0;\nconst dressedEarliest = maxDressMin > 0\n  ? new Date(depTime.getTime() - maxDressMin * 60 * 1000)\n  : depTime;\nconst remindDressed = dressedEarliest < fourAM ? fourAM.toISOString() : dressedEarliest.toISOString();\n\nconst oldDep = row.departure_time ? new Date(row.departure_time) : null;\nconst diffMin = (oldDep && !isNaN(oldDep.getTime())) ? Math.round((oldDep.getTime() - depTime.getTime()) / 60000) : 0; // positive = moved earlier; 0 if no previous departure\n\nreturn { json: {\n  event_id: row.event_id,\n  start_time: newStart,\n  end_time: newEnd,\n  location: locationChanged ? row.new_location : row.location,\n  location_coords: locationCoords,\n  departure_time: depTime.toISOString(),\n  commute_minutes: commuteMin,\n  commute_mode: commuteMode,\n  weather_worst: weatherWorst,\n  clothing_advice: clothingAdvice,\n  remind_dressed: remindDressed,\n  remind_60: new Date(depTime.getTime() - 60 * 60 * 1000).toISOString(),\n  remind_30: new Date(depTime.getTime() - 30 * 60 * 1000).toISOString(),\n  remind_15: new Date(depTime.getTime() - 15 * 60 * 1000).toISOString(),\n  remind_now: depTime.toISOString(),\n  state_version: (parseInt(row.state_version) || 0) + 1,\n  sync_updated: $now.toISO(),\n  ntfy_topic: row.ntfy_topic,\n  title: row.title,\n  _diff_minutes: diffMin,\n  _moved_earlier_15: diffMin > 15\n}};\n",
         "mode": "runOnceForAllItems"
       },
       "id": "8a10ba91-6ee8-4759-94eb-c6307448c5ae",
@@ -1149,6 +1149,35 @@
         910,
         1840
       ]
+    },
+    {
+      "name": "Re-Geocode OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "OK",
+              "operation": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "geocode-ok-mn4eeoi8",
+      "position": [
+        470,
+        1400
+      ]
     }
   ],
   "connections": {
@@ -1492,7 +1521,7 @@
       "main": [
         [
           {
-            "node": "Recalculate Departure",
+            "node": "Re-Geocode OK?",
             "type": "main",
             "index": 0
           }
@@ -1662,9 +1691,28 @@
           }
         ]
       ]
+    },
+    "Re-Geocode OK?": {
+      "main": [
+        [
+          {
+            "node": "Recalculate Departure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Changed Events",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
-    "errorWorkflow": ""
+    "errorWorkflow": "__ERROR_HANDLER_WORKFLOW_ID__",
+    "timezone": "Europe/Bucharest"
   }
 }

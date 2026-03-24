@@ -128,11 +128,40 @@
       ]
     },
     {
+      "name": "Check Location Updates",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "parameters": {
+        "operation": "read",
+        "documentId": {
+          "mode": "id",
+          "value": ""
+        },
+        "sheetName": {
+          "mode": "name",
+          "value": "location_updates"
+        },
+        "options": {}
+      },
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "",
+          "name": "google-sheets-commute"
+        }
+      },
+      "continueOnFail": true,
+      "id": "check-location-updates-hb-001",
+      "position": [
+        690,
+        640
+      ]
+    },
+    {
       "name": "Evaluate Health",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "\n// Check results from all parallel health checks\nconst now = new Date();\nconst hour = now.getHours();\n\n// Check Sheets access\nconst sheetsResult = $('Check Sheets Access').item.json;\nconst sheets_ok = !sheetsResult?.error;\n\n// Check ntfy access\nconst ntfyResult = $('Check ntfy Access').item.json;\nconst ntfy_ok = !ntfyResult?.error;\n\n// Check if daily_plan has entries for today (only check after 5 AM)\nlet planning_ok = true;\nif (hour >= 5) {\n  const today = DateTime.now().setZone('Europe/Bucharest').toISODate(); // timezone-aware\n  const planItems = $('Check Daily Plan').all().map(i => i.json);\n  const todayItems = planItems.filter(i => i.plan_date === today);\n  if (todayItems.length === 0) {\n    planning_ok = false;\n  }\n}\n\n// Check last_cleanup_at (from user_config)\nlet cleanup_ok = true;\nif (sheetsResult && !sheetsResult.error) {\n  const lastCleanup = sheetsResult.last_cleanup_at;\n  if (!lastCleanup) {\n    cleanup_ok = false;\n  } else {\n    const cleanupTime = new Date(lastCleanup);\n    const fortyEightHoursAgo = new Date(now.getTime() - 48 * 60 * 60 * 1000);\n    if (cleanupTime < fortyEightHoursAgo) {\n      cleanup_ok = false;\n    }\n  }\n}\n\n// Build alert details\nconst failures = [];\nif (!sheets_ok) failures.push('Google Sheets unreachable');\nif (!ntfy_ok) failures.push('ntfy unreachable');\nif (!planning_ok) failures.push('No events planned today (WF1 may have failed)');\nif (!cleanup_ok) failures.push('Data retention cleanup overdue — GPS data may exceed 7-day policy. Run WF5a manually.');\n\n// Should WF1 be re-triggered? (catch-up after missed cron)\nconst should_retrigger_wf1 = !planning_ok && hour >= 5 && hour <= 9;\n\n// Is it 8 AM? (daily OK notification)\nconst is_daily_summary = (hour === 8 && now.getMinutes() < 30);\n\nreturn { json: {\n  all_ok: failures.length === 0,\n  failures: failures,\n  failure_text: failures.join('; '),\n  should_retrigger_wf1: should_retrigger_wf1,\n  is_daily_summary: is_daily_summary\n}};\n",
+        "jsCode": "\n// Check results from all parallel health checks\nconst now = new Date();\nconst hour = now.getHours();\n\n// Check Sheets access\nconst sheetsResult = $('Check Sheets Access').item.json;\nconst sheets_ok = !sheetsResult?.error;\n\n// Check ntfy access\nconst ntfyResult = $('Check ntfy Access').item.json;\nconst ntfy_ok = !ntfyResult?.error;\n\n// Check if daily_plan has entries for today (only check after 5 AM)\nlet planning_ok = true;\nif (hour >= 5) {\n  const today = DateTime.now().setZone('Europe/Bucharest').toISODate(); // timezone-aware\n  const planItems = $('Check Daily Plan').all().map(i => i.json);\n  const todayItems = planItems.filter(i => i.plan_date === today);\n  if (todayItems.length === 0) {\n    planning_ok = false;\n  }\n}\n\n// Check last_cleanup_at (from user_config)\nlet cleanup_ok = true;\nif (sheetsResult && !sheetsResult.error) {\n  const lastCleanup = sheetsResult.last_cleanup_at;\n  if (!lastCleanup) {\n    cleanup_ok = false;\n  } else {\n    const cleanupTime = new Date(lastCleanup);\n    const eightDaysAgo = new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000); // 8 days: weekly cleanup (7d) + 1d grace\n    if (cleanupTime < eightDaysAgo) {\n      cleanup_ok = false;\n    }\n  }\n}\n\n// Check location_updates row count (should stay under 10,000 between cleanups)\nlet location_growth_ok = true;\nlet location_check_failed = false;\ntry {\n  const locationRows = $('Check Location Updates').all();\n  if (locationRows.length > 10000) {\n    location_growth_ok = false;\n  }\n} catch (e) {\n  location_check_failed = true;\n}\n\n// Build alert details\nconst failures = [];\nif (!sheets_ok) failures.push('Google Sheets unreachable');\nif (!ntfy_ok) failures.push('ntfy unreachable');\nif (!planning_ok) failures.push('No events planned today (WF1 may have failed)');\nif (!cleanup_ok) failures.push('Data retention cleanup overdue — GPS data may exceed 7-day policy. Run WF5a manually.');\nif (!location_growth_ok) failures.push('location_updates exceeds 10,000 rows — WF5a cleanup may have failed');\nif (location_check_failed) failures.push('location_updates check failed — Google Sheets read error');\n\n// Should WF1 be re-triggered? (catch-up after missed cron)\nconst should_retrigger_wf1 = !planning_ok && hour >= 5 && hour <= 9;\n\n// Is it 8 AM? (daily OK notification)\nconst is_daily_summary = (hour === 8 && now.getMinutes() < 30);\n\nreturn { json: {\n  all_ok: failures.length === 0,\n  failures: failures,\n  failure_text: failures.join('; '),\n  should_retrigger_wf1: should_retrigger_wf1,\n  is_daily_summary: is_daily_summary\n}};\n",
         "mode": "runOnceForAllItems"
       },
       "id": "00d67c01-a6e6-4f5d-9508-6707ae30a444",
@@ -286,7 +315,7 @@
       "typeVersion": 4.2,
       "parameters": {
         "method": "GET",
-        "url": "https://hc-ping.com/YOUR_CHECK_UUID",
+        "url": "https://hc-ping.com/REPLACE_WITH_HEALTHCHECKS_IO_UUID",
         "authentication": "none",
         "options": {}
       },
@@ -389,6 +418,11 @@
             "node": "Check Daily Plan",
             "type": "main",
             "index": 0
+          },
+          {
+            "node": "Check Location Updates",
+            "type": "main",
+            "index": 0
           }
         ]
       ]
@@ -422,6 +456,17 @@
             "node": "Evaluate Health",
             "type": "main",
             "index": 2
+          }
+        ]
+      ]
+    },
+    "Check Location Updates": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Health",
+            "type": "main",
+            "index": 3
           }
         ]
       ]
@@ -530,6 +575,7 @@
     }
   },
   "settings": {
-    "errorWorkflow": ""
+    "errorWorkflow": "__ERROR_HANDLER_WORKFLOW_ID__",
+    "timezone": "Europe/Bucharest"
   }
 }

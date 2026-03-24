@@ -171,7 +171,7 @@
           "parameter": [
             {
               "name": "X-Title",
-              "value": "Event Cancelled \u2014 Stop Tracking"
+              "value": "Event Cancelled — Stop Tracking"
             },
             {
               "name": "X-Priority",
@@ -185,7 +185,7 @@
         },
         "sendBody": true,
         "bodyType": "json",
-        "body": "{\"message\":\"{{ $('Check State + Cancel').item.json.event_id }} cancelled \u2014 stop GPS tracking if no other events\",\"extras\":{\"action\":\"stop_tracking\",\"user_id\":\"{{ $('Check State + Cancel').item.json.user_id }}\"}}"
+        "body": "{\"message\":\"{{ $('Check State + Cancel').item.json.event_id }} cancelled — stop GPS tracking if no other events\",\"extras\":{\"action\":\"stop_tracking\",\"user_id\":\"{{ $('Check State + Cancel').item.json.user_id }}\"}}"
       },
       "credentials": {
         "httpHeaderAuth": {
@@ -293,6 +293,7 @@
     }
   },
   "settings": {
-    "errorWorkflow": ""
+    "errorWorkflow": "__ERROR_HANDLER_WORKFLOW_ID__",
+    "timezone": "Europe/Bucharest"
   }
 }
