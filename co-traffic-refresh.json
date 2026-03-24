@@ -103,7 +103,8 @@
       "position": [
         1130,
         300
-      ]
+      ],
+      "continueOnFail": true
     },
     {
       "name": "Check If Changed >10 Min",

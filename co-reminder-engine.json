@@ -450,7 +450,7 @@
         ],
         [
           {
-            "node": "Update Reminders Sent",
+            "node": "Loop Reminders",
             "type": "main",
             "index": 0
           }

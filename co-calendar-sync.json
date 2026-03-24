@@ -707,7 +707,7 @@
       },
       "id": "01664ed9-ddb4-4973-af63-c24b922b6373",
       "position": [
-        470,
+        690,
         1400
       ]
     },
@@ -742,7 +742,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "\n// Recalculate departure and reminders based on what changed\nconst row = $('Loop Changed Events').item.json;\nconst locationChanged = row.location_changed;\nconst newStart = row.new_start_time;\nconst newEnd = row.new_end_time;\n\nlet depTime, commuteMin, commuteMode, locationCoords, weatherWorst, clothingAdvice;\n\nif (locationChanged) {\n  // Full recalculation happened via Sub-WF A + B\n  const departure = $('Recalculate Departure').item.json;\n  const weather = $('Recalculate Weather').item.json;\n  const geocode = $('Re-Geocode Changed Location').item.json;\n  const geo = geocode.results?.[0]?.geometry?.location;\n  locationCoords = geo ? `${geo.lat},${geo.lng}` : row.location_coords;\n  depTime = new Date(departure.departure_time);\n  commuteMin = departure.commute_minutes;\n  commuteMode = departure.commute_mode;\n  weatherWorst = weather.weather_worst || '';\n  clothingAdvice = weather.clothing_advice || '';\n} else {\n  // Time-only change: recalculate departure from existing commute_minutes\n  locationCoords = row.location_coords;\n  commuteMin = parseInt(row.commute_minutes) || 0;\n  commuteMode = row.commute_mode || '';\n  depTime = new Date(new Date(newStart).getTime() - commuteMin * 60000 - 15 * 60000); // buffer\n  weatherWorst = row.weather_worst || '';\n  clothingAdvice = row.clothing_advice || '';\n}\n\nconst fourAM = new Date(depTime); fourAM.setHours(4, 0, 0, 0);\n\n// Preserve dress_cap from existing row (set by Sub-WF D during initial classification)\nconst dressCap = parseInt(row.dress_cap) || 0;\nconst ALL_DRESS_INTERVALS = ($vars.DRESS_REMINDER_INTERVALS || '90,60,30,15').split(',').map(Number);\nconst DRESS_INTERVALS = dressCap > 0\n  ? ALL_DRESS_INTERVALS.filter(n => n <= dressCap)\n  : ALL_DRESS_INTERVALS;\nconst maxDressMin = DRESS_INTERVALS.length > 0 ? Math.max(...DRESS_INTERVALS) : 0;\nconst dressedEarliest = maxDressMin > 0\n  ? new Date(depTime.getTime() - maxDressMin * 60 * 1000)\n  : depTime;\nconst remindDressed = dressedEarliest < fourAM ? fourAM.toISOString() : dressedEarliest.toISOString();\n\nconst oldDep = new Date(row.departure_time);\nconst diffMin = Math.round((oldDep.getTime() - depTime.getTime()) / 60000); // positive = moved earlier\n\nreturn { json: {\n  event_id: row.event_id,\n  start_time: newStart,\n  end_time: newEnd,\n  location: locationChanged ? row.new_location : row.location,\n  location_coords: locationCoords,\n  departure_time: depTime.toISOString(),\n  commute_minutes: commuteMin,\n  commute_mode: commuteMode,\n  weather_worst: weatherWorst,\n  clothing_advice: clothingAdvice,\n  remind_dressed: remindDressed,\n  remind_60: new Date(depTime.getTime() - 60 * 60 * 1000).toISOString(),\n  remind_30: new Date(depTime.getTime() - 30 * 60 * 1000).toISOString(),\n  remind_15: new Date(depTime.getTime() - 15 * 60 * 1000).toISOString(),\n  remind_now: depTime.toISOString(),\n  state_version: (parseInt(row.state_version) || 0) + 1,\n  sync_updated: $now.toISO(),\n  ntfy_topic: row.ntfy_topic,\n  title: row.title,\n  _diff_minutes: diffMin,\n  _moved_earlier_15: diffMin > 15\n}};\n",
+        "jsCode": "\n// Recalculate departure and reminders based on what changed\nconst row = $('Loop Changed Events').item.json;\nconst locationChanged = row.location_changed;\nconst newStart = row.new_start_time;\nconst newEnd = row.new_end_time;\n\nlet depTime, commuteMin, commuteMode, locationCoords, weatherWorst, clothingAdvice;\n\nif (locationChanged) {\n  // Full recalculation happened via Sub-WF A + B\n  const departure = $('Recalculate Departure').item.json;\n  const weather = $('Recalculate Weather').item.json;\n  const geocode = $('Re-Geocode Changed Location').item.json;\n  const geo = geocode.results?.[0]?.geometry?.location;\n  locationCoords = geo ? `${geo.lat},${geo.lng}` : row.location_coords;\n  depTime = new Date(departure.departure_time);\n  commuteMin = departure.commute_minutes;\n  commuteMode = departure.commute_mode;\n  weatherWorst = weather.weather_worst || '';\n  clothingAdvice = weather.clothing_advice || '';\n} else {\n  // Time-only change: recalculate departure from existing commute_minutes\n  locationCoords = row.location_coords;\n  commuteMin = parseInt(row.commute_minutes) || 0;\n  commuteMode = row.commute_mode || '';\n  depTime = new Date(new Date(newStart).getTime() - commuteMin * 60000); // commute_minutes already includes mode-specific buffer from Sub-WF A\n  weatherWorst = row.weather_worst || '';\n  clothingAdvice = row.clothing_advice || '';\n}\n\nconst fourAM = new Date(depTime); fourAM.setHours(4, 0, 0, 0);\n\n// Preserve dress_cap from existing row (set by Sub-WF D during initial classification)\nconst dressCap = parseInt(row.dress_cap) || 0;\nconst ALL_DRESS_INTERVALS = ($vars.DRESS_REMINDER_INTERVALS || '90,60,30,15').split(',').map(Number);\nconst DRESS_INTERVALS = dressCap > 0\n  ? ALL_DRESS_INTERVALS.filter(n => n <= dressCap)\n  : ALL_DRESS_INTERVALS;\nconst maxDressMin = DRESS_INTERVALS.length > 0 ? Math.max(...DRESS_INTERVALS) : 0;\nconst dressedEarliest = maxDressMin > 0\n  ? new Date(depTime.getTime() - maxDressMin * 60 * 1000)\n  : depTime;\nconst remindDressed = dressedEarliest < fourAM ? fourAM.toISOString() : dressedEarliest.toISOString();\n\nconst oldDep = new Date(row.departure_time);\nconst diffMin = Math.round((oldDep.getTime() - depTime.getTime()) / 60000); // positive = moved earlier\n\nreturn { json: {\n  event_id: row.event_id,\n  start_time: newStart,\n  end_time: newEnd,\n  location: locationChanged ? row.new_location : row.location,\n  location_coords: locationCoords,\n  departure_time: depTime.toISOString(),\n  commute_minutes: commuteMin,\n  commute_mode: commuteMode,\n  weather_worst: weatherWorst,\n  clothing_advice: clothingAdvice,\n  remind_dressed: remindDressed,\n  remind_60: new Date(depTime.getTime() - 60 * 60 * 1000).toISOString(),\n  remind_30: new Date(depTime.getTime() - 30 * 60 * 1000).toISOString(),\n  remind_15: new Date(depTime.getTime() - 15 * 60 * 1000).toISOString(),\n  remind_now: depTime.toISOString(),\n  state_version: (parseInt(row.state_version) || 0) + 1,\n  sync_updated: $now.toISO(),\n  ntfy_topic: row.ntfy_topic,\n  title: row.title,\n  _diff_minutes: diffMin,\n  _moved_earlier_15: diffMin > 15\n}};\n",
         "mode": "runOnceForAllItems"
       },
       "id": "8a10ba91-6ee8-4759-94eb-c6307448c5ae",
@@ -1149,6 +1149,35 @@
         910,
         1840
       ]
+    },
+    {
+      "name": "Re-Geocode OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.status }}",
+              "rightValue": "OK",
+              "operation": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "geocode-ok-mn4eeoi8",
+      "position": [
+        470,
+        1400
+      ]
     }
   ],
   "connections": {
@@ -1492,7 +1521,7 @@
       "main": [
         [
           {
-            "node": "Recalculate Departure",
+            "node": "Re-Geocode OK?",
             "type": "main",
             "index": 0
           }
@@ -1657,6 +1686,24 @@
         [
           {
             "node": "Loop Users",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Re-Geocode OK?": {
+      "main": [
+        [
+          {
+            "node": "Recalculate Departure",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Changed Events",
             "type": "main",
             "index": 0
           }
