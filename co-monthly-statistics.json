@@ -478,6 +478,7 @@
     }
   },
   "settings": {
-    "errorWorkflow": "__ERROR_HANDLER_WORKFLOW_ID__"
+    "errorWorkflow": "__ERROR_HANDLER_WORKFLOW_ID__",
+    "timezone": "Europe/Bucharest"
   }
 }

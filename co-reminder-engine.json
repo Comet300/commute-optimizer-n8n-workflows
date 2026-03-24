@@ -175,7 +175,7 @@
       },
       "id": "b456342c-85ab-4a28-931a-9fa65a786950",
       "position": [
-        910,
+        1130,
         520
       ]
     },
@@ -314,6 +314,36 @@
         1160,
         520
       ]
+    },
+    {
+      "name": "Delivery OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": ""
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.delivered }}",
+              "rightValue": "true",
+              "operation": {
+                "type": "string",
+                "operation": "equals",
+                "sameType": false
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "delivery-ok-mn4lsafp",
+      "position": [
+        910,
+        520
+      ]
     }
   ],
   "connections": {
@@ -399,7 +429,7 @@
       "main": [
         [
           {
-            "node": "Mark Reminder Sent",
+            "node": "Delivery OK?",
             "type": "main",
             "index": 0
           }
@@ -467,9 +497,28 @@
           }
         ]
       ]
+    },
+    "Delivery OK?": {
+      "main": [
+        [
+          {
+            "node": "Mark Reminder Sent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Loop Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "settings": {
-    "errorWorkflow": "__ERROR_HANDLER_WORKFLOW_ID__"
+    "errorWorkflow": "__ERROR_HANDLER_WORKFLOW_ID__",
+    "timezone": "Europe/Bucharest"
   }
 }

@@ -111,7 +111,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "parameters": {
-        "jsCode": "\nconst oldDep = new Date($('Loop Events').item.json.departure_time);\nconst newDep = new Date($json.departure_time);\nconst diffMin = Math.abs(newDep - oldDep) / (60 * 1000);\n\nreturn { json: {\n  event_id: $('Loop Events').item.json.event_id,\n  user_id: $('Loop Events').item.json.user_id,\n  title: $('Loop Events').item.json.title,\n  ntfy_topic: $('Loop Events').item.json.ntfy_topic,\n  traffic_updated_departure: $json.departure_time,\n  traffic_updated_commute_min: $json.commute_minutes,\n  changed_more_than_10: diffMin > 10,\n  diff_minutes: Math.round(diffMin)\n}};\n",
+        "jsCode": "\nconst row = $('Loop Events').item.json;\n\n// Guard: if Sub-WF A failed (continueOnFail), preserve existing traffic values\nif ($json.error || !$json.departure_time) {\n  return { json: {\n    event_id: row.event_id,\n    user_id: row.user_id,\n    title: row.title,\n    ntfy_topic: row.ntfy_topic,\n    traffic_updated_departure: row.traffic_updated_departure || row.departure_time,\n    traffic_updated_commute_min: row.traffic_updated_commute_min || row.commute_minutes,\n    changed_more_than_10: false,\n    diff_minutes: 0\n  }};\n}\n\nconst oldDep = new Date(row.departure_time);\nconst newDep = new Date($json.departure_time);\nconst diffMin = Math.abs(newDep - oldDep) / (60 * 1000);\n\nreturn { json: {\n  event_id: row.event_id,\n  user_id: row.user_id,\n  title: row.title,\n  ntfy_topic: row.ntfy_topic,\n  traffic_updated_departure: $json.departure_time,\n  traffic_updated_commute_min: $json.commute_minutes,\n  changed_more_than_10: diffMin > 10,\n  diff_minutes: Math.round(diffMin)\n}};\n",
         "mode": "runOnceForAllItems"
       },
       "id": "0d79d1b4-aadb-4345-a46b-30cfcdf7059c",
@@ -358,6 +358,7 @@
     }
   },
   "settings": {
-    "errorWorkflow": "__ERROR_HANDLER_WORKFLOW_ID__"
+    "errorWorkflow": "__ERROR_HANDLER_WORKFLOW_ID__",
+    "timezone": "Europe/Bucharest"
   }
 }
