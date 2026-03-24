@@ -575,6 +575,6 @@
     }
   },
   "settings": {
-    "errorWorkflow": ""
+    "errorWorkflow": "__ERROR_HANDLER_WORKFLOW_ID__"
   }
 }
